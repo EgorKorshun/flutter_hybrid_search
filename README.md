@@ -4,10 +4,6 @@ An **offline hybrid search engine** for Flutter that combines vector
 similarity, FTS5 full-text search, typo-tolerant keyword matching, and
 heuristic reranking — entirely on-device, no cloud, no latency.
 
-Extracted and generalised from the
-[offline_kb_assist](https://github.com/EgorKorshun/offline_kb_assist)
-reference application.
-
 ---
 
 ## Features
@@ -29,7 +25,7 @@ reference application.
 
 ```yaml
 dependencies:
-  flutter_hybrid_search: ^1.0.0
+  flutter_hybrid_search: ^1.0.1
   sqflite: ^2.4.2
 ```
 

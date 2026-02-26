@@ -1,3 +1,7 @@
+## 1.0.1
+
+Improvements in documentation and metadata
+
 ## 1.0.0
 
 Initial release.
