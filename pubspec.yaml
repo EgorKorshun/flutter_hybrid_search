@@ -1,8 +1,7 @@
 name: flutter_hybrid_search
 description: >-
-  Offline hybrid search engine for Flutter: combines vector similarity
-  (cosine / HNSW), FTS5 full-text search, typo-tolerant matching, and
-  heuristic reranking. Zero cloud dependency, fully on-device.
+  Offline hybrid search for Flutter: HNSW vector similarity, FTS5 full-text,
+  typo-tolerant matching, and pluggable reranking — no cloud required.
 version: 1.0.0
 homepage: https://github.com/EgorKorshun/flutter_hybrid_search
 repository: https://github.com/EgorKorshun/flutter_hybrid_search
