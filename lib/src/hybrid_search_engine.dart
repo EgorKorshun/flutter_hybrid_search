@@ -124,6 +124,19 @@ class HybridSearchEngine {
   LocalHNSW<int>? _hnsw;
 
   bool _initialized = false;
+  bool _disposed = false;
+
+  // ---------------------------------------------------------------------------
+  // Public state
+  // ---------------------------------------------------------------------------
+
+  /// Whether [initialize] has been called successfully and [dispose] has not.
+  bool get isInitialized => _initialized && !_disposed;
+
+  /// Number of entries (embeddings) managed by this engine.
+  ///
+  /// Available immediately after construction (does not require [initialize]).
+  int get entryCount => _embeddings.length;
 
   // ---------------------------------------------------------------------------
   // Lifecycle
@@ -135,8 +148,15 @@ class HybridSearchEngine {
   ///
   /// This method is idempotent — subsequent calls are no-ops.
   ///
+  /// Throws [StateError] if [dispose] has already been called.
+  ///
   /// Must be called before [search].
   Future<void> initialize() async {
+    if (_disposed) {
+      throw StateError(
+        'HybridSearchEngine.initialize() called after dispose().',
+      );
+    }
     if (_initialized) return;
 
     // Precompute L2 norms for fast cosine similarity.
@@ -155,8 +175,12 @@ class HybridSearchEngine {
 
   /// Releases the SQLite database connection.
   ///
-  /// After [dispose], calls to [search] will throw a [StateError].
+  /// Safe to call multiple times — subsequent calls are no-ops.
+  /// After [dispose], calls to [search] and [initialize] will throw a
+  /// [StateError].
   Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
     if (_initialized) {
       await _db.close();
       _initialized = false;
@@ -173,6 +197,11 @@ class HybridSearchEngine {
   ///
   /// Throws [StateError] if [initialize] has not been called.
   Future<List<SearchResult>> search(String query, {int limit = 3}) async {
+    if (_disposed) {
+      throw StateError(
+        'HybridSearchEngine.search() called after dispose().',
+      );
+    }
     if (!_initialized) {
       throw StateError(
         'HybridSearchEngine.initialize() must be called before search().',

@@ -1,3 +1,24 @@
+## 1.0.2
+
+### Added
+
+- `HybridSearchEngine.isInitialized` getter — check engine state without
+  try/catch.
+- `HybridSearchEngine.entryCount` getter — number of embeddings managed by the
+  engine, available immediately after construction.
+- `HybridSearchConfig.copyWith()` — create a tweaked copy without repeating
+  every field.
+
+### Improved
+
+- `dispose()` is now idempotent (safe to call multiple times) and guards
+  against use-after-dispose: calling `search()` or `initialize()` after
+  `dispose()` throws a clear `StateError`.
+- Typo-tolerance `_canDrop` rewritten from O(n²) substring concatenation to
+  O(n) two-pointer scan — eliminates temporary string allocations.
+- `SearchRanking` RegExp instances are now compiled once and cached as static
+  finals instead of being re-created on every call.
+
 ## 1.0.1
 
 Improvements in documentation and metadata

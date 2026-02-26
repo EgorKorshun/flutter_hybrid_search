@@ -80,8 +80,8 @@ abstract final class SearchRanking {
     final String normalised = query
         .trim()
         .toLowerCase()
-        .replaceAll(RegExp(_Regex.nonWord, unicode: true), ' ')
-        .replaceAll(RegExp(_Regex.whitespace), ' ')
+        .replaceAll(_reNonWord, ' ')
+        .replaceAll(_reWhitespace, ' ')
         .trim();
 
     return normalised.split(' ').where((String w) => w.isNotEmpty).toList();
@@ -249,23 +249,36 @@ abstract final class SearchRanking {
 
   /// Returns `true` if dropping one character from [longer] yields [shorter].
   static bool _canDrop(String longer, String shorter) {
-    for (int i = 0; i < longer.length; i++) {
-      if (longer.substring(0, i) + longer.substring(i + 1) == shorter) {
-        return true;
+    // Two-pointer scan: O(n) without substring allocations.
+    int i = 0;
+    int j = 0;
+    bool skipped = false;
+    while (i < longer.length && j < shorter.length) {
+      if (longer.codeUnitAt(i) != shorter.codeUnitAt(j)) {
+        if (skipped) return false;
+        skipped = true;
+        i++; // skip one char in longer
+      } else {
+        i++;
+        j++;
       }
     }
-    return false;
+    return j == shorter.length;
   }
 
   /// Normalises [text] to lowercase words stripped of punctuation.
   static List<String> _normaliseWords(String text) {
     return text
         .toLowerCase()
-        .replaceAll(RegExp(r'[^\p{L}\p{N}_\s]', unicode: true), ' ')
-        .split(RegExp(r'\s+'))
+        .replaceAll(_reNonWord, ' ')
+        .split(_reWhitespace)
         .where((String w) => w.isNotEmpty)
         .toList();
   }
+
+  // Cached RegExp instances to avoid re-compilation on every call.
+  static final RegExp _reNonWord = RegExp(_Regex.nonWord, unicode: true);
+  static final RegExp _reWhitespace = RegExp(_Regex.whitespace);
 }
 
 /// Compiled regex patterns.

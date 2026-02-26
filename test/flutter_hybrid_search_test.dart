@@ -197,6 +197,30 @@ void main() {
       expect(c.tableName, 'articles');
       expect(c.questionColumn, 'title');
     });
+
+    test('copyWith overrides only specified fields', () {
+      const HybridSearchConfig base = HybridSearchConfig();
+      final HybridSearchConfig tuned = base.copyWith(
+        candidatePoolSize: 100,
+        hnswM: 32,
+      );
+      expect(tuned.candidatePoolSize, 100);
+      expect(tuned.hnswM, 32);
+      // Unchanged fields keep defaults.
+      expect(tuned.ftsLimit, base.ftsLimit);
+      expect(tuned.tableName, base.tableName);
+      expect(tuned.embeddingDim, base.embeddingDim);
+    });
+
+    test('copyWith with no arguments returns equivalent config', () {
+      const HybridSearchConfig base = HybridSearchConfig(
+        candidatePoolSize: 30,
+        tableName: 'items',
+      );
+      final HybridSearchConfig copy = base.copyWith();
+      expect(copy.candidatePoolSize, base.candidatePoolSize);
+      expect(copy.tableName, base.tableName);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -545,6 +569,64 @@ void main() {
       // Just verifies search completes without error with a custom reranker.
       final List<SearchResult> results = await engine.search('dart');
       expect(results, isA<List<SearchResult>>());
+    });
+
+    test('entryCount reflects number of embeddings', () {
+      final HybridSearchEngine engine = HybridSearchEngine(
+        db: db,
+        embeddings: embeddings,
+        embedder: _FakeEmbedder(embeddings, 0),
+      );
+      expect(engine.entryCount, entries.length);
+    });
+
+    test('isInitialized reflects lifecycle state', () async {
+      final Database freshDb = await _makeDb(entries);
+      final HybridSearchEngine engine = HybridSearchEngine(
+        db: freshDb,
+        embeddings: embeddings,
+        embedder: _FakeEmbedder(embeddings, 0),
+      );
+      expect(engine.isInitialized, isFalse);
+      await engine.initialize();
+      expect(engine.isInitialized, isTrue);
+      await engine.dispose();
+      expect(engine.isInitialized, isFalse);
+    });
+
+    test('dispose is idempotent', () async {
+      final Database freshDb = await _makeDb(entries);
+      final HybridSearchEngine engine = HybridSearchEngine(
+        db: freshDb,
+        embeddings: embeddings,
+        embedder: _FakeEmbedder(embeddings, 0),
+      );
+      await engine.initialize();
+      await engine.dispose();
+      await engine.dispose(); // second call must not throw
+    });
+
+    test('initialize after dispose throws StateError', () async {
+      final Database freshDb = await _makeDb(entries);
+      final HybridSearchEngine engine = HybridSearchEngine(
+        db: freshDb,
+        embeddings: embeddings,
+        embedder: _FakeEmbedder(embeddings, 0),
+      );
+      await engine.dispose();
+      expect(() => engine.initialize(), throwsStateError);
+    });
+
+    test('search after dispose throws StateError', () async {
+      final Database freshDb = await _makeDb(entries);
+      final HybridSearchEngine engine = HybridSearchEngine(
+        db: freshDb,
+        embeddings: embeddings,
+        embedder: _FakeEmbedder(embeddings, 0),
+      );
+      await engine.initialize();
+      await engine.dispose();
+      expect(() => engine.search('dart'), throwsStateError);
     });
   });
 }

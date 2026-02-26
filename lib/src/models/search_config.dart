@@ -165,6 +165,45 @@ class HybridSearchConfig {
   /// Default: `'answer'`.
   final String answerColumn;
 
+  /// Returns a copy with the given fields replaced.
+  ///
+  /// Useful for tweaking a single parameter without repeating the rest:
+  /// ```dart
+  /// const base = HybridSearchConfig();
+  /// final tuned = base.copyWith(candidatePoolSize: 100, hnswM: 32);
+  /// ```
+  HybridSearchConfig copyWith({
+    int? candidatePoolSize,
+    int? ftsLimit,
+    int? hnswThreshold,
+    int? hnswSearchK,
+    int? hnswM,
+    int? hnswEf,
+    int? embeddingDim,
+    String? tableName,
+    String? ftsTableName,
+    String? idColumn,
+    String? categoryColumn,
+    String? questionColumn,
+    String? answerColumn,
+  }) {
+    return HybridSearchConfig(
+      candidatePoolSize: candidatePoolSize ?? this.candidatePoolSize,
+      ftsLimit: ftsLimit ?? this.ftsLimit,
+      hnswThreshold: hnswThreshold ?? this.hnswThreshold,
+      hnswSearchK: hnswSearchK ?? this.hnswSearchK,
+      hnswM: hnswM ?? this.hnswM,
+      hnswEf: hnswEf ?? this.hnswEf,
+      embeddingDim: embeddingDim ?? this.embeddingDim,
+      tableName: tableName ?? this.tableName,
+      ftsTableName: ftsTableName ?? this.ftsTableName,
+      idColumn: idColumn ?? this.idColumn,
+      categoryColumn: categoryColumn ?? this.categoryColumn,
+      questionColumn: questionColumn ?? this.questionColumn,
+      answerColumn: answerColumn ?? this.answerColumn,
+    );
+  }
+
   @override
   String toString() => 'HybridSearchConfig('
       'candidatePoolSize: $candidatePoolSize, '
