@@ -1,0 +1,30 @@
+name: flutter_hybrid_search
+description: >-
+  Offline hybrid search engine for Flutter: combines vector similarity
+  (cosine / HNSW), FTS5 full-text search, typo-tolerant matching, and
+  heuristic reranking. Zero cloud dependency, fully on-device.
+version: 1.0.0
+homepage: https://github.com/EgorKorshun/flutter_hybrid_search
+repository: https://github.com/EgorKorshun/flutter_hybrid_search
+issue_tracker: https://github.com/EgorKorshun/flutter_hybrid_search/issues
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.10.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # SQLite + FTS5 for keyword search.
+  sqflite: ^2.4.2
+  # Pure-Dart HNSW approximate nearest-neighbour index for large corpora.
+  local_hnsw: ^1.0.0
+  # Cross-platform path utilities.
+  path: ^1.9.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  # SQLite in-process for unit tests (no platform channel required).
+  sqflite_common_ffi: ^2.4.0+2
