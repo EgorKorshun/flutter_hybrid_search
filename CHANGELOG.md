@@ -1,3 +1,38 @@
+## 1.1.0
+
+### Added
+
+- **Structured logging** via `package:logging` — the engine logs initialization
+  timing, per-query phase breakdown, FTS errors, and cache hits. Attach a
+  handler to `Logger('HybridSearchEngine')` to see diagnostics.
+- **`SearchMetadata`** — new model with per-phase timing (embed, vector, FTS,
+  typo, rerank, total) and candidate counts.
+- **`searchWithMetadata()`** — returns `({List<SearchResult> results,
+  SearchMetadata metadata})` for performance profiling.
+- **`searchBatch()`** — search multiple queries in one call, reusing engine
+  state and embed cache.
+- **`Embedding` typedef** — `typedef Embedding = Float32List` for improved API
+  readability.
+- **Embed cache** — LRU cache for `Embedder.embed()` results. Configurable via
+  `embedCacheSize` constructor parameter (default: 32, set 0 to disable).
+
+### Improved
+
+- **Embedding dimension validation** — constructor now eagerly validates that
+  every embedding vector matches `config.embeddingDim`, throwing a clear
+  `ArgumentError` on mismatch instead of crashing later in cosine computation.
+- **Config validation** — `HybridSearchConfig` now asserts that numeric
+  parameters are positive and that `hnswSearchK >= candidatePoolSize`.
+- **Float16Store validation** — `decode()` now throws `FormatException` when the
+  header declares zero vectors or zero dimensions.
+- **Race-safe initialization** — concurrent `initialize()` calls are now safe:
+  uses a `Completer` so only one init runs and others await it.
+- **FTS error handling** — `_ftsSearch()` now catches specific `DatabaseException`
+  and `StateError` types and logs them via `package:logging` instead of
+  silently swallowing all exceptions with `catch (_)`.
+- **Loop-unrolled cosine & L2 norm** — inner loops process 4 elements per
+  iteration for better throughput on large vectors (128+ dims).
+
 ## 1.0.2
 
 ### Added

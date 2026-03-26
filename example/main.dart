@@ -9,11 +9,21 @@
 /// test file which uses an in-memory SQLite database.
 library;
 
-import 'dart:typed_data';
-
 import 'package:flutter/services.dart';
 import 'package:flutter_hybrid_search/flutter_hybrid_search.dart';
+import 'package:logging/logging.dart';
 import 'package:sqflite/sqflite.dart';
+
+// ---------------------------------------------------------------------------
+// Step 0 — Enable logging (optional)
+// ---------------------------------------------------------------------------
+
+void setupLogging() {
+  Logger.root.level = Level.FINE;
+  Logger.root.onRecord.listen((LogRecord record) {
+    print('${record.level.name}: ${record.loggerName}: ${record.message}');
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Step 1 — Implement Embedder for your model
@@ -29,7 +39,7 @@ class BertEmbedder implements Embedder {
   final Set<String> _stopwords;
 
   @override
-  Future<Float32List> embed(String text) async {
+  Future<Embedding> embed(String text) async {
     // In a real implementation, tokenize and run your ONNX session.
     // Example with package:onnxruntime:
     //
@@ -41,7 +51,7 @@ class BertEmbedder implements Embedder {
     // };
     // final outputs = _session.run(OrtRunOptions(), inputs);
     // final raw = outputs[0]!.value as List<List<List<double>>>;
-    // return Float32List.fromList(_meanPool(raw[0], tokens.realLength));
+    // return Embedding.fromList(_meanPool(raw[0], tokens.realLength));
     throw UnimplementedError('Replace with your model call.');
   }
 
@@ -64,7 +74,7 @@ Future<HybridSearchEngine> buildEngine() async {
   //   Training script produces: [count: uint32][dim: uint32][float16 vectors]
   final ByteData embeddingData =
       await rootBundle.load('assets/embeddings.bin');
-  final List<Float32List> embeddings =
+  final List<Embedding> embeddings =
       Float16Store.decode(embeddingData.buffer.asUint8List());
 
   // Open the SQLite knowledge-base (copy from assets first if needed).
@@ -90,6 +100,8 @@ Future<HybridSearchEngine> buildEngine() async {
     ),
     // Optional: custom reranker (default is HeuristicReranker).
     reranker: const HeuristicReranker(),
+    // Optional: control embed cache size (default: 32, set 0 to disable).
+    embedCacheSize: 32,
   );
 
   await engine.initialize();
@@ -121,6 +133,46 @@ Future<void> runSearch(HybridSearchEngine engine, String query) async {
 }
 
 // ---------------------------------------------------------------------------
+// Step 3b — Search with metadata (diagnostics)
+// ---------------------------------------------------------------------------
+
+Future<void> runSearchWithMetadata(
+    HybridSearchEngine engine, String query) async {
+  final (:List<SearchResult> results, :SearchMetadata metadata) =
+      await engine.searchWithMetadata(query, limit: 3);
+
+  print('Query: $query');
+  print('Results: ${results.length}');
+  print('Total: ${metadata.totalMs.toStringAsFixed(1)} ms');
+  print('  Embed:  ${metadata.embedMs.toStringAsFixed(1)} ms');
+  print('  Vector: ${metadata.vectorMs.toStringAsFixed(1)} ms');
+  print('  FTS:    ${metadata.ftsMs.toStringAsFixed(1)} ms');
+  print('  Typo:   ${metadata.typoMs.toStringAsFixed(1)} ms');
+  print('  Rerank: ${metadata.rerankMs.toStringAsFixed(1)} ms');
+  print('  Pool:   ${metadata.candidateCount} candidates '
+      '(${metadata.vectorCandidateCount} vec + '
+      '${metadata.keywordCandidateCount} kw)');
+}
+
+// ---------------------------------------------------------------------------
+// Step 3c — Batch search
+// ---------------------------------------------------------------------------
+
+Future<void> runBatchSearch(HybridSearchEngine engine) async {
+  final List<List<SearchResult>> batch = await engine.searchBatch(
+    <String>['What is Dart?', 'How do widgets work?', 'Flutter state management'],
+    limit: 3,
+  );
+
+  for (int i = 0; i < batch.length; i++) {
+    print('--- Query ${i + 1} ---');
+    for (final SearchResult r in batch[i]) {
+      print('  [${r.score.toStringAsFixed(3)}] ${r.entry.question}');
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Step 4 — Custom reranker example
 // ---------------------------------------------------------------------------
 
@@ -139,22 +191,22 @@ class CategoryBoostReranker implements RerankerInterface {
     RerankerCandidates candidates,
     Set<int> keywordMatchIds, {
     int limit = 3,
-    Float32List? queryEmbedding,
+    Embedding? queryEmbedding,
     Set<int>? ftsIds,
     List<String>? contentWords,
   }) {
-    final List<({SearchEntry entry, double vectorScore, Float32List? embedding})>
+    final List<({SearchEntry entry, double vectorScore, Embedding? embedding})>
         sorted = candidates.toList()
           ..sort(
             (
               ({
                 SearchEntry entry,
-                Float32List? embedding,
+                Embedding? embedding,
                 double vectorScore,
               }) a,
               ({
                 SearchEntry entry,
-                Float32List? embedding,
+                Embedding? embedding,
                 double vectorScore,
               }) b,
             ) {
@@ -171,7 +223,7 @@ class CategoryBoostReranker implements RerankerInterface {
         .map<SearchResult>(
           (({
                 SearchEntry entry,
-                Float32List? embedding,
+                Embedding? embedding,
                 double vectorScore,
               }) c) =>
               SearchResult(

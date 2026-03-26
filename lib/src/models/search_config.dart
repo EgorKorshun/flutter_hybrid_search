@@ -51,7 +51,18 @@ class HybridSearchConfig {
     this.categoryColumn = 'category',
     this.questionColumn = 'question',
     this.answerColumn = 'answer',
-  });
+  })  : assert(candidatePoolSize > 0, 'candidatePoolSize must be > 0'),
+        assert(ftsLimit > 0, 'ftsLimit must be > 0'),
+        assert(hnswThreshold > 0, 'hnswThreshold must be > 0'),
+        assert(hnswSearchK > 0, 'hnswSearchK must be > 0'),
+        assert(
+          hnswSearchK >= candidatePoolSize,
+          'hnswSearchK ($hnswSearchK) must be >= candidatePoolSize '
+          '($candidatePoolSize) to ensure enough vector candidates in the pool.',
+        ),
+        assert(hnswM > 0, 'hnswM must be > 0'),
+        assert(hnswEf > 0, 'hnswEf must be > 0'),
+        assert(embeddingDim > 0, 'embeddingDim must be > 0');
 
   // -------------------------------------------------------------------------
   // Search tuning

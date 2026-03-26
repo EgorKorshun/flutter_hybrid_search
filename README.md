@@ -8,16 +8,21 @@ heuristic reranking — entirely on-device, no cloud, no latency.
 
 ## Features
 
-- ✅ **Vector similarity search** — cosine distance on precomputed Float32 embeddings
-- ✅ **HNSW approximate index** — sub-millisecond vector search for corpora ≥ 1 000 entries
-- ✅ **FTS5 full-text search** — exact keyword matching via SQLite FTS5
-- ✅ **Typo-tolerant matching** — 1-character edit distance (substitution, insertion, deletion)
-- ✅ **Heuristic reranking** — FTS boost + typo boost + concise-question boost + deduplication
-- ✅ **Pluggable embedder** — implement `Embedder` with any model (BERT, TF-IDF, …)
-- ✅ **Pluggable reranker** — implement `RerankerInterface` for custom ranking logic
-- ✅ **Float16 binary format** — compact precomputed embeddings (50 % smaller than Float32)
-- ✅ **Configurable schema** — custom table/column names for any SQLite database
-- ✅ **Zero cloud dependency** — works fully offline on Android, iOS, macOS, Linux, Windows
+- **Vector similarity search** — cosine distance on precomputed Float32 embeddings
+- **HNSW approximate index** — sub-millisecond vector search for corpora >= 1 000 entries
+- **FTS5 full-text search** — exact keyword matching via SQLite FTS5
+- **Typo-tolerant matching** — 1-character edit distance (substitution, insertion, deletion)
+- **Heuristic reranking** — FTS boost + typo boost + concise-question boost + deduplication
+- **Pluggable embedder** — implement `Embedder` with any model (BERT, TF-IDF, ...)
+- **Pluggable reranker** — implement `RerankerInterface` for custom ranking logic
+- **Float16 binary format** — compact precomputed embeddings (50 % smaller than Float32)
+- **Configurable schema** — custom table/column names for any SQLite database
+- **Zero cloud dependency** — works fully offline on Android, iOS, macOS, Linux, Windows
+- **Structured logging** — diagnostics via `package:logging` (zero overhead when unused)
+- **Search metadata** — per-phase timing and candidate counts for performance profiling
+- **Batch search** — search multiple queries in one call
+- **Embed cache** — LRU cache for repeated/autocomplete queries
+- **Dimension validation** — early error on embedding/config mismatch
 
 ---
 
@@ -25,7 +30,7 @@ heuristic reranking — entirely on-device, no cloud, no latency.
 
 ```yaml
 dependencies:
-  flutter_hybrid_search: ^1.0.1
+  flutter_hybrid_search: ^1.1.0
   sqflite: ^2.4.2
 ```
 
@@ -35,30 +40,30 @@ dependencies:
 
 ```
 User query
-    │
-    ▼
-┌─────────────┐    Float32 vector
-│   Embedder  │──────────────────────┐
-└─────────────┘                      ▼
-                              ┌──────────────┐
-                              │ Vector scorer│  cosine / HNSW
-                              └──────┬───────┘
-                                     │ top-N candidates
-┌─────────────┐                      ▼
-│  SQLite DB  │──► FTS5 MATCH ──► ┌──────────────┐
-│    FTS5     │──► Typo scan  ──► │ Candidate    │ union
-└─────────────┘                   │    pool      │
-                                  └──────┬───────┘
-                                         │
-                                  ┌──────▼───────┐
-                                  │   Reranker   │ boosts + dedup
-                                  └──────┬───────┘
-                                         │
-                                  ┌──────▼───────┐
-                                  │ Keyword filter│ overlap check
-                                  └──────┬───────┘
-                                         │
-                                  List<SearchResult>
+    |
+    v
++-----------+    Float32 vector
+|  Embedder |----------------------+
++-----------+                      v
+                            +--------------+
+                            | Vector scorer|  cosine / HNSW
+                            +------+-------+
+                                   | top-N candidates
++-----------+                      v
+| SQLite DB |-> FTS5 MATCH --> +--------------+
+|   FTS5    |-> Typo scan  --> | Candidate    | union
++-----------+                  |    pool      |
+                               +------+-------+
+                                      |
+                               +------v-------+
+                               |   Reranker   | boosts + dedup
+                               +------+-------+
+                                      |
+                               +------v-------+
+                               | Keyword filter| overlap check
+                               +------+-------+
+                                      |
+                               List<SearchResult>
 ```
 
 ---
@@ -72,9 +77,9 @@ import 'package:flutter_hybrid_search/flutter_hybrid_search.dart';
 
 class MyEmbedder implements Embedder {
   @override
-  Future<Float32List> embed(String text) async {
+  Future<Embedding> embed(String text) async {
     // Run your model here (ONNX, TFLite, etc.).
-    return myModel.encode(text); // must return Float32List
+    return myModel.encode(text); // must return Embedding (Float32List)
   }
 
   @override
@@ -118,7 +123,29 @@ for (final r in results) {
 }
 ```
 
-### 4. Custom configuration
+### 4. Search with metadata (profiling)
+
+```dart
+final (:results, :metadata) = await engine.searchWithMetadata('flutter');
+print('Total: ${metadata.totalMs.toStringAsFixed(1)} ms');
+print('Embed: ${metadata.embedMs.toStringAsFixed(1)} ms');
+print('Vector: ${metadata.vectorMs.toStringAsFixed(1)} ms');
+print('Candidates: ${metadata.candidateCount}');
+```
+
+### 5. Batch search
+
+```dart
+final batch = await engine.searchBatch(
+  ['dart', 'flutter', 'widgets'],
+  limit: 3,
+);
+for (final results in batch) {
+  print(results.first.entry.question);
+}
+```
+
+### 6. Custom configuration
 
 ```dart
 final engine = HybridSearchEngine(
@@ -126,7 +153,7 @@ final engine = HybridSearchEngine(
   embeddings: embeddings,
   embedder: MyEmbedder(),
   config: const HybridSearchConfig(
-    candidatePoolSize: 80,    // more candidates → better recall
+    candidatePoolSize: 80,    // more candidates -> better recall
     hnswThreshold: 500,       // enable HNSW at 500+ entries
     embeddingDim: 256,        // match your model's output size
     tableName: 'articles',    // custom DB schema
@@ -134,10 +161,11 @@ final engine = HybridSearchEngine(
     answerColumn: 'body',
   ),
   reranker: const HeuristicReranker(), // or your own RerankerInterface
+  embedCacheSize: 64,                  // LRU cache for embed() results
 );
 ```
 
-### 5. Custom reranker
+### 7. Custom reranker
 
 ```dart
 class CategoryBoostReranker implements RerankerInterface {
@@ -150,7 +178,7 @@ class CategoryBoostReranker implements RerankerInterface {
     RerankerCandidates candidates,
     Set<int> keywordMatchIds, {
     int limit = 3,
-    Float32List? queryEmbedding,
+    Embedding? queryEmbedding,
     Set<int>? ftsIds,
     List<String>? contentWords,
   }) {
@@ -165,6 +193,21 @@ class CategoryBoostReranker implements RerankerInterface {
     )).toList();
   }
 }
+```
+
+### 8. Logging
+
+```dart
+import 'package:logging/logging.dart';
+
+Logger.root.level = Level.FINE;
+Logger.root.onRecord.listen((record) {
+  print('${record.level.name}: ${record.loggerName}: ${record.message}');
+});
+
+// Now all engine operations log timing and diagnostics:
+// FINE: HybridSearchEngine: Initialized in 42 ms: 500 entries, dim=128, HNSW=false.
+// FINE: HybridSearchEngine: Search "flutter": 3 results in 12.4 ms (embed=5.1, vec=0.3, fts=2.1, typo=1.8, rerank=3.1).
 ```
 
 ---
@@ -202,7 +245,7 @@ training script or any compatible tool):
 Offset  Size     Field
 0       4 bytes  count     (uint32, little-endian)
 4       4 bytes  dimension (uint32, little-endian)
-8+      count × dim × 2 B  Float16 vectors (IEEE 754, little-endian)
+8+      count x dim x 2 B  Float16 vectors (IEEE 754, little-endian)
 ```
 
 **Python writer:**
@@ -221,63 +264,81 @@ with open('embeddings.bin', 'wb') as f:
 
 ### `HybridSearchEngine`
 
-| Member                                                               | Description                                                      |
-|----------------------------------------------------------------------|------------------------------------------------------------------|
-| `HybridSearchEngine({db, embeddings, embedder, config?, reranker?})` | Constructor                                                      |
-| `initialize()`                                                       | Builds HNSW index + loads question map. Call once before search. |
-| `search(query, {limit})` → `Future<List<SearchResult>>`              | Main search method                                               |
-| `dispose()`                                                          | Closes the database connection                                   |
+| Member | Description |
+|---|---|
+| `HybridSearchEngine({db, embeddings, embedder, config?, reranker?, embedCacheSize?})` | Constructor (validates embedding dimensions) |
+| `initialize()` | Builds HNSW index + loads question map. Call once before search. Concurrent-safe. |
+| `search(query, {limit})` -> `Future<List<SearchResult>>` | Main search method |
+| `searchWithMetadata(query, {limit})` -> `Future<({results, metadata})>` | Search with timing diagnostics |
+| `searchBatch(queries, {limit})` -> `Future<List<List<SearchResult>>>` | Batch search for multiple queries |
+| `dispose()` | Closes the database connection |
+| `isInitialized` | Whether the engine is ready for queries |
+| `entryCount` | Number of embeddings (available before `initialize()`) |
 
 ### `Embedder`
 
-| Member                                | Description                                   |
-|---------------------------------------|-----------------------------------------------|
-| `embed(text)` → `Future<Float32List>` | Convert text to dense vector                  |
-| `contentWords(text)` → `List<String>` | Stopword-stripped tokens for keyword matching |
+| Member | Description |
+|---|---|
+| `embed(text)` -> `Future<Embedding>` | Convert text to dense vector |
+| `contentWords(text)` -> `List<String>` | Stopword-stripped tokens for keyword matching |
+
+### `SearchMetadata`
+
+| Field | Type | Description |
+|---|---|---|
+| `embedMs` | `double` | Time spent generating query embedding |
+| `vectorMs` | `double` | Time spent on vector scoring |
+| `ftsMs` | `double` | Time spent on FTS5 search |
+| `typoMs` | `double` | Time spent on typo-tolerant scan |
+| `rerankMs` | `double` | Time spent in reranker |
+| `totalMs` | `double` | Total wall-clock time |
+| `candidateCount` | `int` | Total candidates in pool |
+| `vectorCandidateCount` | `int` | Candidates from vector scoring |
+| `keywordCandidateCount` | `int` | Candidates from keyword matching |
 
 ### `HybridSearchConfig`
 
-| Parameter           | Default      | Description                              |
-|---------------------|--------------|------------------------------------------|
-| `candidatePoolSize` | `50`         | Max candidates fed to reranker           |
-| `ftsLimit`          | `50`         | Max FTS5 results per query               |
-| `hnswThreshold`     | `1000`       | Min entries to enable HNSW index         |
-| `hnswSearchK`       | `100`        | Neighbours to fetch from HNSW            |
-| `hnswM`             | `16`         | HNSW graph connections per node          |
-| `hnswEf`            | `64`         | HNSW search candidate list size          |
-| `embeddingDim`      | `128`        | Vector dimension (must match your model) |
-| `tableName`         | `'entries'`  | SQLite table name                        |
-| `ftsTableName`      | `'fts'`      | FTS5 virtual table name                  |
-| `idColumn`          | `'id'`       | Primary key column                       |
-| `categoryColumn`    | `'category'` | Category column                          |
-| `questionColumn`    | `'question'` | Question / title column                  |
-| `answerColumn`      | `'answer'`   | Answer / body column                     |
+| Parameter | Default | Description |
+|---|---|---|
+| `candidatePoolSize` | `50` | Max candidates fed to reranker |
+| `ftsLimit` | `50` | Max FTS5 results per query |
+| `hnswThreshold` | `1000` | Min entries to enable HNSW index |
+| `hnswSearchK` | `100` | Neighbours to fetch from HNSW (must be >= `candidatePoolSize`) |
+| `hnswM` | `16` | HNSW graph connections per node |
+| `hnswEf` | `64` | HNSW search candidate list size |
+| `embeddingDim` | `128` | Vector dimension (must match your model) |
+| `tableName` | `'entries'` | SQLite table name |
+| `ftsTableName` | `'fts'` | FTS5 virtual table name |
+| `idColumn` | `'id'` | Primary key column |
+| `categoryColumn` | `'category'` | Category column |
+| `questionColumn` | `'question'` | Question / title column |
+| `answerColumn` | `'answer'` | Answer / body column |
 
 ### `SearchRanking` — boost constants
 
-| Constant                | Value       | Trigger                            |
-|-------------------------|-------------|------------------------------------|
-| `ftsBoost`              | `0.5`       | Entry found by FTS5 MATCH          |
-| `typoBoost`             | `0.7`       | Entry found by typo tolerance only |
-| `conciseMatchBoost`     | `0.5` (max) | Short, on-topic question           |
-| `perfectScoreThreshold` | `0.999`     | Returns single result shortcut     |
+| Constant | Value | Trigger |
+|---|---|---|
+| `ftsBoost` | `0.5` | Entry found by FTS5 MATCH |
+| `typoBoost` | `0.7` | Entry found by typo tolerance only |
+| `conciseMatchBoost` | `0.5` (max) | Short, on-topic question |
+| `perfectScoreThreshold` | `0.999` | Returns single result shortcut |
 
 ### `Float16Store`
 
-| Method                                             | Description                   |
-|----------------------------------------------------|-------------------------------|
-| `Float16Store.decode(bytes)` → `List<Float32List>` | Decode full embedding file    |
-| `Float16Store.peekCount(bytes)` → `int`            | Read vector count from header |
-| `Float16Store.peekDimension(bytes)` → `int`        | Read dimension from header    |
+| Method | Description |
+|---|---|
+| `Float16Store.decode(bytes)` -> `List<Embedding>` | Decode full embedding file |
+| `Float16Store.peekCount(bytes)` -> `int` | Read vector count from header |
+| `Float16Store.peekDimension(bytes)` -> `int` | Read dimension from header |
 
 ---
 
 ## Search pipeline in detail
 
-1. **Embed query** — `Embedder.embed(query)` → `Float32List`
+1. **Embed query** — `Embedder.embed(query)` -> `Embedding` (cached via LRU)
 2. **Vector scoring** — cosine similarity against all precomputed embeddings
    - *Small corpus (< `hnswThreshold`)*: O(n) linear scan
-   - *Large corpus (≥ `hnswThreshold`)*: HNSW approximate search (sub-ms)
+   - *Large corpus (>= `hnswThreshold`)*: HNSW approximate search (sub-ms)
 3. **FTS5 search** — `MATCH` query on the question column; retries with single word on no results
 4. **Typo-tolerant scan** — Levenshtein-1 match on all question texts
 5. **Candidate pool** — union of top-N by vector score + all keyword matches
@@ -300,7 +361,7 @@ class BertEmbedder implements Embedder {
   final WordPieceTokenizer _tokenizer;
 
   @override
-  Future<Float32List> embed(String text) async {
+  Future<Embedding> embed(String text) async {
     final output = _tokenizer.encode(text);
     final inputs = {
       'input_ids':      OrtValueTensor.createTensorWithDataList(output.inputIdsInt64, [1, 64]),
@@ -309,7 +370,7 @@ class BertEmbedder implements Embedder {
     };
     final outputs = _session.run(OrtRunOptions(), inputs);
     final raw = outputs[0]!.value as List<List<List<double>>>;
-    return Float32List.fromList(_meanPool(raw[0], output.realLength));
+    return Embedding.fromList(_meanPool(raw[0], output.realLength));
   }
 
   @override
@@ -323,15 +384,15 @@ class BertEmbedder implements Embedder {
 
 Benchmarked on a mid-range Android device with 500 entries and 128-dim BERT-Tiny:
 
-| Step                                 | Time                 |
-|--------------------------------------|----------------------|
-| Embedding generation                 | 10–50 ms             |
-| Vector search (linear, 500 entries)  | < 1 ms               |
-| Vector search (HNSW, 10 000 entries) | < 2 ms               |
-| FTS5 query                           | < 5 ms               |
-| Typo-tolerant scan                   | < 10 ms              |
-| Reranking                            | < 5 ms               |
-| **Total**                            | **< 100 ms typical** |
+| Step | Time |
+|---|---|
+| Embedding generation | 10-50 ms |
+| Vector search (linear, 500 entries) | < 1 ms |
+| Vector search (HNSW, 10 000 entries) | < 2 ms |
+| FTS5 query | < 5 ms |
+| Typo-tolerant scan | < 10 ms |
+| Reranking | < 5 ms |
+| **Total** | **< 100 ms typical** |
 
 ---
 

@@ -75,6 +75,17 @@ abstract final class Float16Store {
     final int count = header.getUint32(0, Endian.little);
     final int dim = header.getUint32(4, Endian.little);
 
+    if (count == 0) {
+      throw const FormatException(
+        'Float16Store: vector count in header is 0.',
+      );
+    }
+    if (dim == 0) {
+      throw const FormatException(
+        'Float16Store: vector dimension in header is 0.',
+      );
+    }
+
     final int expectedBytes = _headerBytes + count * dim * _f16Bytes;
     if (bytes.length < expectedBytes) {
       throw FormatException(

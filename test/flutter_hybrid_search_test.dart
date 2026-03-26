@@ -48,9 +48,9 @@ Future<Database> _makeDb(List<SearchEntry> entries) async {
 ///
 /// Each entry gets a slightly different vector so cosine similarity can
 /// distinguish them.
-List<Float32List> _makeEmbeddings(int count, {int dim = 128}) {
-  return List<Float32List>.generate(count, (int i) {
-    final Float32List v = Float32List(dim);
+List<Embedding> _makeEmbeddings(int count, {int dim = 128}) {
+  return List<Embedding>.generate(count, (int i) {
+    final Embedding v = Embedding(dim);
     v[i % dim] = 1.0; // one-hot-like, guaranteed unit norm
     return v;
   });
@@ -60,11 +60,11 @@ List<Float32List> _makeEmbeddings(int count, {int dim = 128}) {
 class _FakeEmbedder implements Embedder {
   _FakeEmbedder(this._embeddings, this._index);
 
-  final List<Float32List> _embeddings;
+  final List<Embedding> _embeddings;
   final int _index;
 
   @override
-  Future<Float32List> embed(String text) async => _embeddings[_index];
+  Future<Embedding> embed(String text) async => _embeddings[_index];
 
   @override
   List<String> contentWords(String text) =>
@@ -174,6 +174,49 @@ void main() {
   });
 
   // -------------------------------------------------------------------------
+  // SearchMetadata tests
+  // -------------------------------------------------------------------------
+  group('SearchMetadata', () {
+    test('stores all timing fields', () {
+      const SearchMetadata m = SearchMetadata(
+        embedMs: 1.5,
+        vectorMs: 0.3,
+        ftsMs: 2.0,
+        typoMs: 0.5,
+        rerankMs: 1.0,
+        totalMs: 5.3,
+        candidateCount: 42,
+        vectorCandidateCount: 30,
+        keywordCandidateCount: 12,
+      );
+      expect(m.embedMs, 1.5);
+      expect(m.vectorMs, 0.3);
+      expect(m.ftsMs, 2.0);
+      expect(m.typoMs, 0.5);
+      expect(m.rerankMs, 1.0);
+      expect(m.totalMs, 5.3);
+      expect(m.candidateCount, 42);
+      expect(m.vectorCandidateCount, 30);
+      expect(m.keywordCandidateCount, 12);
+    });
+
+    test('toString includes total', () {
+      const SearchMetadata m = SearchMetadata(
+        embedMs: 1,
+        vectorMs: 2,
+        ftsMs: 3,
+        typoMs: 4,
+        rerankMs: 5,
+        totalMs: 15,
+        candidateCount: 10,
+        vectorCandidateCount: 5,
+        keywordCandidateCount: 5,
+      );
+      expect(m.toString(), contains('15.0'));
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // HybridSearchConfig tests
   // -------------------------------------------------------------------------
   group('HybridSearchConfig', () {
@@ -190,6 +233,7 @@ void main() {
     test('custom values are preserved', () {
       const HybridSearchConfig c = HybridSearchConfig(
         candidatePoolSize: 10,
+        hnswSearchK: 10,
         tableName: 'articles',
         questionColumn: 'title',
       );
@@ -202,6 +246,7 @@ void main() {
       const HybridSearchConfig base = HybridSearchConfig();
       final HybridSearchConfig tuned = base.copyWith(
         candidatePoolSize: 100,
+        hnswSearchK: 200,
         hnswM: 32,
       );
       expect(tuned.candidatePoolSize, 100);
@@ -215,6 +260,7 @@ void main() {
     test('copyWith with no arguments returns equivalent config', () {
       const HybridSearchConfig base = HybridSearchConfig(
         candidatePoolSize: 30,
+        hnswSearchK: 30,
         tableName: 'items',
       );
       final HybridSearchConfig copy = base.copyWith();
@@ -363,7 +409,7 @@ void main() {
       expect(
         reranker.rerank('query', <({
           SearchEntry entry,
-          Float32List? embedding,
+          Embedding? embedding,
           double vectorScore,
         })>[], <int>{}),
         isEmpty,
@@ -375,7 +421,7 @@ void main() {
         'dart',
         <({
           SearchEntry entry,
-          Float32List? embedding,
+          Embedding? embedding,
           double vectorScore,
         })>[
           (entry: _dart, vectorScore: 0.9, embedding: null),
@@ -398,7 +444,7 @@ void main() {
         'dart',
         <({
           SearchEntry entry,
-          Float32List? embedding,
+          Embedding? embedding,
           double vectorScore,
         })>[
           (entry: _dart, vectorScore: 0.9, embedding: null),
@@ -416,7 +462,7 @@ void main() {
         'query',
         <({
           SearchEntry entry,
-          Float32List? embedding,
+          Embedding? embedding,
           double vectorScore,
         })>[
           (entry: _dart, vectorScore: 0.9, embedding: null),
@@ -456,16 +502,24 @@ void main() {
       );
     });
 
-    test('decode single zero vector returns all zeros', () {
-      const int dim = 4;
-      final ByteData bd = ByteData(8 + dim * 2);
-      bd.setUint32(0, 1, Endian.little); // count = 1
-      bd.setUint32(4, dim, Endian.little);
-      // All zero bytes → f16(0x0000) = 0.0
-      final List<Float32List> vecs =
-          Float16Store.decode(bd.buffer.asUint8List());
-      expect(vecs.length, 1);
-      expect(vecs[0].every((double d) => d == 0.0), isTrue);
+    test('decode throws FormatException for zero count', () {
+      final ByteData bd = ByteData(8 + 4 * 2);
+      bd.setUint32(0, 0, Endian.little); // count = 0
+      bd.setUint32(4, 4, Endian.little);
+      expect(
+        () => Float16Store.decode(bd.buffer.asUint8List()),
+        throwsA(isA<FormatException>()),
+      );
+    });
+
+    test('decode throws FormatException for zero dimension', () {
+      final ByteData bd = ByteData(8);
+      bd.setUint32(0, 1, Endian.little);
+      bd.setUint32(4, 0, Endian.little); // dim = 0
+      expect(
+        () => Float16Store.decode(bd.buffer.asUint8List()),
+        throwsA(isA<FormatException>()),
+      );
     });
 
     test('decode f16(0x3C00) = 1.0', () {
@@ -486,7 +540,7 @@ void main() {
   // -------------------------------------------------------------------------
   group('HybridSearchEngine', () {
     late Database db;
-    late List<Float32List> embeddings;
+    late List<Embedding> embeddings;
     const List<SearchEntry> entries = <SearchEntry>[_dart, _flutter, _isolate];
 
     setUpAll(() async {
@@ -628,6 +682,116 @@ void main() {
       await engine.dispose();
       expect(() => engine.search('dart'), throwsStateError);
     });
+
+    // -----------------------------------------------------------------------
+    // New tests for v1.1.0
+    // -----------------------------------------------------------------------
+
+    test('throws ArgumentError for mismatched embedding dimensions', () {
+      final List<Embedding> badEmbeddings = <Embedding>[
+        Embedding(64), // wrong dim, expected 128
+      ];
+      expect(
+        () => HybridSearchEngine(
+          db: db,
+          embeddings: badEmbeddings,
+          embedder: _FakeEmbedder(badEmbeddings, 0),
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('searchWithMetadata returns metadata alongside results', () async {
+      final Database freshDb = await _makeDb(entries);
+      final HybridSearchEngine engine = HybridSearchEngine(
+        db: freshDb,
+        embeddings: embeddings,
+        embedder: _FakeEmbedder(embeddings, 0),
+      );
+      await engine.initialize();
+
+      final (:List<SearchResult> results, :SearchMetadata metadata) =
+          await engine.searchWithMetadata('dart');
+
+      expect(results, isNotEmpty);
+      expect(metadata.totalMs, greaterThanOrEqualTo(0));
+      expect(metadata.embedMs, greaterThanOrEqualTo(0));
+      expect(metadata.vectorMs, greaterThanOrEqualTo(0));
+      expect(metadata.candidateCount, greaterThan(0));
+      await engine.dispose();
+    });
+
+    test('searchBatch returns results for each query', () async {
+      final Database freshDb = await _makeDb(entries);
+      final HybridSearchEngine engine = HybridSearchEngine(
+        db: freshDb,
+        embeddings: embeddings,
+        embedder: _FakeEmbedder(embeddings, 0),
+      );
+      await engine.initialize();
+
+      final List<List<SearchResult>> batch =
+          await engine.searchBatch(<String>['dart', 'isolates']);
+      expect(batch.length, 2);
+      // At least the first query should return results (the fake embedder
+      // always returns dart's vector, so 'dart' is guaranteed to match).
+      expect(batch[0], isNotEmpty);
+      await engine.dispose();
+    });
+
+    test('embed cache returns same results for repeated queries', () async {
+      final Database freshDb = await _makeDb(entries);
+      final HybridSearchEngine engine = HybridSearchEngine(
+        db: freshDb,
+        embeddings: embeddings,
+        embedder: _FakeEmbedder(embeddings, 0),
+        embedCacheSize: 4,
+      );
+      await engine.initialize();
+
+      final List<SearchResult> first = await engine.search('dart');
+      final List<SearchResult> second = await engine.search('dart');
+
+      expect(first.length, second.length);
+      if (first.isNotEmpty && second.isNotEmpty) {
+        expect(first.first.entry.id, second.first.entry.id);
+      }
+      await engine.dispose();
+    });
+
+    test('embed cache disabled with size 0', () async {
+      final Database freshDb = await _makeDb(entries);
+      final HybridSearchEngine engine = HybridSearchEngine(
+        db: freshDb,
+        embeddings: embeddings,
+        embedder: _FakeEmbedder(embeddings, 0),
+        embedCacheSize: 0,
+      );
+      await engine.initialize();
+
+      // Should work without cache.
+      final List<SearchResult> results = await engine.search('dart');
+      expect(results, isNotEmpty);
+      await engine.dispose();
+    });
+
+    test('concurrent initialize calls are safe', () async {
+      final Database freshDb = await _makeDb(entries);
+      final HybridSearchEngine engine = HybridSearchEngine(
+        db: freshDb,
+        embeddings: embeddings,
+        embedder: _FakeEmbedder(embeddings, 0),
+      );
+
+      // Launch two concurrent initializations.
+      await Future.wait<void>(<Future<void>>[
+        engine.initialize(),
+        engine.initialize(),
+      ]);
+
+      expect(engine.isInitialized, isTrue);
+      await engine.dispose();
+    });
   });
 }
 
@@ -639,7 +803,7 @@ class _ReverseReranker implements RerankerInterface {
     RerankerCandidates candidates,
     Set<int> keywordMatchIds, {
     int limit = 3,
-    Float32List? queryEmbedding,
+    Embedding? queryEmbedding,
     Set<int>? ftsIds,
     List<String>? contentWords,
   }) {
@@ -648,7 +812,7 @@ class _ReverseReranker implements RerankerInterface {
         .map<SearchResult>(
           (({
                     SearchEntry entry,
-                    Float32List? embedding,
+                    Embedding? embedding,
                     double vectorScore,
                   }) c) =>
               SearchResult(
