@@ -51,6 +51,7 @@ class HybridSearchConfig {
     this.categoryColumn = 'category',
     this.questionColumn = 'question',
     this.answerColumn = 'answer',
+    this.minScore = 0.0,
   })  : assert(candidatePoolSize > 0, 'candidatePoolSize must be > 0'),
         assert(ftsLimit > 0, 'ftsLimit must be > 0'),
         assert(hnswThreshold > 0, 'hnswThreshold must be > 0'),
@@ -62,7 +63,8 @@ class HybridSearchConfig {
         ),
         assert(hnswM > 0, 'hnswM must be > 0'),
         assert(hnswEf > 0, 'hnswEf must be > 0'),
-        assert(embeddingDim > 0, 'embeddingDim must be > 0');
+        assert(embeddingDim > 0, 'embeddingDim must be > 0'),
+        assert(minScore >= 0.0, 'minScore must be >= 0.0');
 
   // -------------------------------------------------------------------------
   // Search tuning
@@ -176,6 +178,18 @@ class HybridSearchConfig {
   /// Default: `'answer'`.
   final String answerColumn;
 
+  /// Minimum composite score for a result to be included in the output.
+  ///
+  /// Results whose [SearchResult.score] is below [minScore] are discarded
+  /// after reranking and the keyword-overlap filter.
+  ///
+  /// Scores are built from cosine similarity plus optional boost signals
+  /// (FTS5, typo, conciseness) and can slightly exceed 1.0. Set [minScore]
+  /// above 1.0 only if you want to require at least one boost signal to fire.
+  ///
+  /// Default: `0.0` (no filtering — identical to 1.1.0 behaviour).
+  final double minScore;
+
   /// Returns a copy with the given fields replaced.
   ///
   /// Useful for tweaking a single parameter without repeating the rest:
@@ -197,6 +211,7 @@ class HybridSearchConfig {
     String? categoryColumn,
     String? questionColumn,
     String? answerColumn,
+    double? minScore,
   }) {
     return HybridSearchConfig(
       candidatePoolSize: candidatePoolSize ?? this.candidatePoolSize,
@@ -212,6 +227,7 @@ class HybridSearchConfig {
       categoryColumn: categoryColumn ?? this.categoryColumn,
       questionColumn: questionColumn ?? this.questionColumn,
       answerColumn: answerColumn ?? this.answerColumn,
+      minScore: minScore ?? this.minScore,
     );
   }
 

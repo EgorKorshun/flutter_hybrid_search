@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 /// A single item in the searchable knowledge base.
 ///
 /// [SearchEntry] is an immutable value object representing one Q&A pair.
@@ -24,6 +26,22 @@
 ///   answerColumn:   'body',
 /// )
 /// ```
+///
+/// ## Custom metadata
+///
+/// Attach domain-specific key-value pairs via [metadata]:
+/// ```dart
+/// const entry = SearchEntry(
+///   id: 1,
+///   category: 'Flutter',
+///   question: 'What is a widget?',
+///   answer: 'Everything is a widget.',
+///   metadata: {'priority': 1, 'tags': ['ui', 'basics']},
+/// );
+/// ```
+///
+/// To persist metadata, add a `TEXT` column to your schema and pass
+/// `metadataColumn` to [fromMap] / [toMap].
 final class SearchEntry {
   /// Creates a [SearchEntry].
   const SearchEntry({
@@ -31,22 +49,35 @@ final class SearchEntry {
     required this.category,
     required this.question,
     required this.answer,
+    this.metadata = const <String, Object?>{},
   });
 
   /// Creates a [SearchEntry] from a SQLite row map using column names from
   /// [idColumn], [categoryColumn], [questionColumn], and [answerColumn].
+  ///
+  /// If [metadataColumn] is provided and the row contains a non-null value for
+  /// that column, the value is JSON-decoded into [metadata].
   factory SearchEntry.fromMap(
     Map<String, Object?> map, {
     String idColumn = 'id',
     String categoryColumn = 'category',
     String questionColumn = 'question',
     String answerColumn = 'answer',
+    String? metadataColumn,
   }) {
+    Map<String, Object?> meta = const <String, Object?>{};
+    if (metadataColumn != null && map[metadataColumn] != null) {
+      final Object? raw = map[metadataColumn];
+      if (raw is String) {
+        meta = (jsonDecode(raw) as Map<String, dynamic>).cast<String, Object?>();
+      }
+    }
     return SearchEntry(
       id: map[idColumn] as int,
       category: map[categoryColumn] as String? ?? '',
       question: map[questionColumn] as String,
       answer: map[answerColumn] as String,
+      metadata: meta,
     );
   }
 
@@ -69,13 +100,34 @@ final class SearchEntry {
   /// May contain Markdown formatting.
   final String answer;
 
+  /// Arbitrary domain-specific key-value pairs attached to this entry.
+  ///
+  /// Values should be JSON-serialisable: [String], [int], [double], [bool],
+  /// [List], [Map<String, Object?>], or `null`.
+  ///
+  /// This field is **not stored in the SQLite main table** by default.
+  /// To persist metadata, add a `TEXT` column (storing JSON) to your schema
+  /// and pass `metadataColumn` to [fromMap] and [toMap].
+  ///
+  /// Default: empty map.
+  final Map<String, Object?> metadata;
+
   /// Serialises the entry to a `Map` for insertion or debugging.
-  Map<String, Object> toMap() => <String, Object>{
-        'id': id,
-        'category': category,
-        'question': question,
-        'answer': answer,
-      };
+  ///
+  /// If [metadataColumn] is provided and [metadata] is non-empty, the
+  /// metadata is JSON-encoded and stored under [metadataColumn].
+  Map<String, Object> toMap({String? metadataColumn}) {
+    final Map<String, Object> m = <String, Object>{
+      'id': id,
+      'category': category,
+      'question': question,
+      'answer': answer,
+    };
+    if (metadataColumn != null && metadata.isNotEmpty) {
+      m[metadataColumn] = jsonEncode(metadata);
+    }
+    return m;
+  }
 
   @override
   String toString() =>
@@ -88,8 +140,18 @@ final class SearchEntry {
           id == other.id &&
           category == other.category &&
           question == other.question &&
-          answer == other.answer;
+          answer == other.answer &&
+          _mapEqual(metadata, other.metadata);
 
   @override
-  int get hashCode => Object.hash(id, category, question, answer);
+  int get hashCode => Object.hash(id, category, question, answer, metadata.length);
+
+  static bool _mapEqual(Map<String, Object?> a, Map<String, Object?> b) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (final String key in a.keys) {
+      if (!b.containsKey(key) || b[key] != a[key]) return false;
+    }
+    return true;
+  }
 }

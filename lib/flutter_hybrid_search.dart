@@ -39,8 +39,9 @@
 /// | `HybridSearchEngine` | Main search engine |
 /// | `Embedding` | Type alias for `Float32List` embedding vectors |
 /// | `Embedder` | Abstract interface for embedding generation |
-/// | `SearchEntry` | Knowledge-base entry (id, category, question, answer) |
-/// | `SearchResult` | Search match (entry + score + method) |
+/// | `SearchEntry` | Knowledge-base entry (id, category, question, answer, metadata) |
+/// | `SearchResult` | Search match (entry + score + method + breakdown) |
+/// | `ScoreBreakdown` | Per-signal score breakdown for a result |
 /// | `SearchMetadata` | Timing & diagnostic info from a search call |
 /// | `HybridSearchConfig` | Tunable engine parameters |
 /// | `SearchRanking` | Pure ranking utilities (boosts, typo logic) |
@@ -52,6 +53,7 @@ library;
 
 export 'src/embedder.dart';
 export 'src/hybrid_search_engine.dart';
+export 'src/models/score_breakdown.dart';
 export 'src/models/search_config.dart';
 export 'src/models/search_entry.dart';
 export 'src/models/search_metadata.dart';

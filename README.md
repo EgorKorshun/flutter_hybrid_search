@@ -13,6 +13,10 @@ heuristic reranking — entirely on-device, no cloud, no latency.
 - **FTS5 full-text search** — exact keyword matching via SQLite FTS5
 - **Typo-tolerant matching** — 1-character edit distance (substitution, insertion, deletion)
 - **Heuristic reranking** — FTS boost + typo boost + concise-question boost + deduplication
+- **Score breakdown** — per-signal score breakdown on every result for debugging and explainability
+- **Incremental index updates** — add or remove entries from a live engine without recreating it
+- **Quality threshold** — configurable `minScore` to enforce a relevance floor
+- **Custom entry metadata** — attach arbitrary key-value data to any `SearchEntry`
 - **Pluggable embedder** — implement `Embedder` with any model (BERT, TF-IDF, ...)
 - **Pluggable reranker** — implement `RerankerInterface` for custom ranking logic
 - **Float16 binary format** — compact precomputed embeddings (50 % smaller than Float32)
@@ -30,7 +34,7 @@ heuristic reranking — entirely on-device, no cloud, no latency.
 
 ```yaml
 dependencies:
-  flutter_hybrid_search: ^1.1.0
+  flutter_hybrid_search: ^1.2.0
   sqflite: ^2.4.2
 ```
 
@@ -56,11 +60,11 @@ User query
                                +------+-------+
                                       |
                                +------v-------+
-                               |   Reranker   | boosts + dedup
+                               |   Reranker   | boosts + dedup + ScoreBreakdown
                                +------+-------+
                                       |
                                +------v-------+
-                               | Keyword filter| overlap check
+                               | Keyword filter| overlap + minScore
                                +------+-------+
                                       |
                                List<SearchResult>
@@ -123,7 +127,75 @@ for (final r in results) {
 }
 ```
 
-### 4. Search with metadata (profiling)
+### 4. Score breakdown — debug why results ranked as they did
+
+Every result from the default `HeuristicReranker` includes a `ScoreBreakdown`:
+
+```dart
+for (final r in results) {
+  if (r.breakdown case final b?) {
+    print('vector=${b.vectorScore.toStringAsFixed(3)}'
+          '  fts=${b.ftsScore.toStringAsFixed(3)}'
+          '  typo=${b.typoScore.toStringAsFixed(3)}'
+          '  concise=${b.conciseScore.toStringAsFixed(3)}'
+          '  total=${b.totalScore.toStringAsFixed(3)}');
+  }
+}
+```
+
+### 5. Incremental index updates — add and remove entries at runtime
+
+```dart
+// Add new entries without recreating the engine.
+await engine.addEntries(
+  [
+    SearchEntry(
+      id: 0,               // assigned automatically
+      category: 'Dart',
+      question: 'What is a mixin?',
+      answer: 'A mixin adds behaviour to a class without inheritance.',
+    ),
+  ],
+  [await myEmbedder.embed('What is a mixin?')],
+);
+
+// Remove entries by id.
+await engine.removeEntries([3, 7]);
+```
+
+### 6. Quality threshold (`minScore`)
+
+```dart
+final engine = HybridSearchEngine(
+  db: db,
+  embeddings: embeddings,
+  embedder: MyEmbedder(),
+  config: const HybridSearchConfig(
+    minScore: 0.5, // discard results with composite score < 0.5
+  ),
+);
+```
+
+### 7. Custom entry metadata
+
+```dart
+final entry = SearchEntry(
+  id: 1,
+  category: 'Flutter',
+  question: 'What is a widget?',
+  answer: 'Everything is a widget.',
+  metadata: {'priority': 1, 'tags': ['ui', 'basics'], 'verified': true},
+);
+
+// Access metadata on results.
+print(results.first.entry.metadata['priority']);
+
+// Persist metadata: add a TEXT column to your schema and pass metadataColumn.
+final row = entry.toMap(metadataColumn: 'meta');
+final restored = SearchEntry.fromMap(row, metadataColumn: 'meta');
+```
+
+### 8. Search with metadata (profiling)
 
 ```dart
 final (:results, :metadata) = await engine.searchWithMetadata('flutter');
@@ -133,7 +205,7 @@ print('Vector: ${metadata.vectorMs.toStringAsFixed(1)} ms');
 print('Candidates: ${metadata.candidateCount}');
 ```
 
-### 5. Batch search
+### 9. Batch search
 
 ```dart
 final batch = await engine.searchBatch(
@@ -145,7 +217,7 @@ for (final results in batch) {
 }
 ```
 
-### 6. Custom configuration
+### 10. Custom configuration
 
 ```dart
 final engine = HybridSearchEngine(
@@ -159,13 +231,14 @@ final engine = HybridSearchEngine(
     tableName: 'articles',    // custom DB schema
     questionColumn: 'title',
     answerColumn: 'body',
+    minScore: 0.4,            // relevance floor
   ),
   reranker: const HeuristicReranker(), // or your own RerankerInterface
   embedCacheSize: 64,                  // LRU cache for embed() results
 );
 ```
 
-### 7. Custom reranker
+### 11. Custom reranker
 
 ```dart
 class CategoryBoostReranker implements RerankerInterface {
@@ -195,7 +268,7 @@ class CategoryBoostReranker implements RerankerInterface {
 }
 ```
 
-### 8. Logging
+### 12. Logging
 
 ```dart
 import 'package:logging/logging.dart';
@@ -208,6 +281,7 @@ Logger.root.onRecord.listen((record) {
 // Now all engine operations log timing and diagnostics:
 // FINE: HybridSearchEngine: Initialized in 42 ms: 500 entries, dim=128, HNSW=false.
 // FINE: HybridSearchEngine: Search "flutter": 3 results in 12.4 ms (embed=5.1, vec=0.3, fts=2.1, typo=1.8, rerank=3.1).
+// FINE: HybridSearchEngine: addEntries: added 1 entries, corpus now 501, HNSW=false.
 ```
 
 ---
@@ -271,9 +345,40 @@ with open('embeddings.bin', 'wb') as f:
 | `search(query, {limit})` -> `Future<List<SearchResult>>` | Main search method |
 | `searchWithMetadata(query, {limit})` -> `Future<({results, metadata})>` | Search with timing diagnostics |
 | `searchBatch(queries, {limit})` -> `Future<List<List<SearchResult>>>` | Batch search for multiple queries |
+| `addEntries(entries, embeddings)` -> `Future<void>` | Add entries to a live engine |
+| `removeEntries(ids)` -> `Future<void>` | Remove entries by id from a live engine |
 | `dispose()` | Closes the database connection |
 | `isInitialized` | Whether the engine is ready for queries |
-| `entryCount` | Number of embeddings (available before `initialize()`) |
+| `entryCount` | Number of embeddings in the current corpus |
+
+### `SearchResult`
+
+| Field | Type | Description |
+|---|---|---|
+| `entry` | `SearchEntry` | The matched knowledge-base entry |
+| `score` | `double` | Composite relevance score |
+| `method` | `String` | Ranking strategy identifier |
+| `breakdown` | `ScoreBreakdown?` | Per-signal score breakdown (non-null for `HeuristicReranker`) |
+
+### `ScoreBreakdown`
+
+| Field | Type | Description |
+|---|---|---|
+| `vectorScore` | `double` | Cosine similarity contribution |
+| `ftsScore` | `double` | FTS5 exact-match boost (0 or `ftsBoost`) |
+| `typoScore` | `double` | Typo-only match boost (0 or `typoBoost`) |
+| `conciseScore` | `double` | Concise-question boost (0 – `conciseMatchBoost`) |
+| `totalScore` | `double` | Sum of all signals — equals `SearchResult.score` |
+
+### `SearchEntry`
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `int` | 1-based row id |
+| `category` | `String` | Topic label |
+| `question` | `String` | FTS5-indexed search target |
+| `answer` | `String` | Body returned on match |
+| `metadata` | `Map<String, Object?>` | Arbitrary domain-specific data (default: empty) |
 
 ### `Embedder`
 
@@ -313,6 +418,7 @@ with open('embeddings.bin', 'wb') as f:
 | `categoryColumn` | `'category'` | Category column |
 | `questionColumn` | `'question'` | Question / title column |
 | `answerColumn` | `'answer'` | Answer / body column |
+| `minScore` | `0.0` | Minimum composite score (0.0 = no filtering) |
 
 ### `SearchRanking` — boost constants
 
@@ -342,8 +448,9 @@ with open('embeddings.bin', 'wb') as f:
 3. **FTS5 search** — `MATCH` query on the question column; retries with single word on no results
 4. **Typo-tolerant scan** — Levenshtein-1 match on all question texts
 5. **Candidate pool** — union of top-N by vector score + all keyword matches
-6. **Rerank** — apply boost signals, sort, deduplicate by question text
+6. **Rerank** — apply boost signals, record `ScoreBreakdown`, sort, deduplicate by question text
 7. **Keyword-overlap filter** — discard results with zero word overlap to query
+8. **minScore filter** — discard results below `HybridSearchConfig.minScore`
 
 ---
 

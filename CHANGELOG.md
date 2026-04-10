@@ -1,3 +1,41 @@
+## 1.2.0
+
+### Added
+
+- **`ScoreBreakdown`** — new model that exposes the individual contribution of
+  each ranking signal (`vectorScore`, `ftsScore`, `typoScore`, `conciseScore`,
+  `totalScore`). Every `SearchResult` produced by `HeuristicReranker` now
+  carries a populated `breakdown` field, making it easy to debug rankings and
+  build explainability UI.
+- **`SearchResult.breakdown`** — optional `ScoreBreakdown?` field on
+  `SearchResult`. `null` for custom rerankers that don't opt in; non-null for
+  the default `HeuristicReranker`.
+- **`SearchResult.copyWith()`** — create a modified copy of a result without
+  touching other fields.
+- **`HybridSearchEngine.addEntries()`** — add new entries and their embeddings
+  to a live engine without recreating it. Automatically rebuilds the HNSW
+  index when the corpus crosses `hnswThreshold`.
+- **`HybridSearchEngine.removeEntries()`** — remove entries by id from a live
+  engine. Rebuilds or clears the HNSW index as needed. Unknown ids are silently
+  ignored.
+- **`HybridSearchConfig.minScore`** — minimum composite score threshold
+  (default `0.0`). Results below this value are discarded after reranking,
+  letting you enforce a quality floor without post-processing the list yourself.
+- **`SearchEntry.metadata`** — arbitrary `Map<String, Object?>` for
+  domain-specific key-value data (priority, tags, dates, etc.). Defaults to an
+  empty map — fully backward compatible. Persists as JSON when you pass a
+  `metadataColumn` to `SearchEntry.fromMap()` / `SearchEntry.toMap()`.
+
+### Improved
+
+- **Internal embedding storage** refactored from a contiguous `List` to a
+  sparse `Map<int, Embedding>` keyed by SQLite id. This makes incremental
+  adds and removes correct in all cases (non-contiguous ids, gaps after
+  deletion) without any SQLite ID remapping.
+- **HNSW items** are now tagged by their SQLite id instead of a list index,
+  removing the `index + 1` offset that would have become incorrect after
+  removals.
+
 ## 1.1.0
 
 ### Added

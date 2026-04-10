@@ -1,9 +1,11 @@
+import 'score_breakdown.dart';
 import 'search_entry.dart';
 
 /// A single match returned by [HybridSearchEngine.search].
 ///
-/// Encapsulates the matched [entry], its relevance [score], and the
-/// [method] identifier describing which signals contributed to the score.
+/// Encapsulates the matched [entry], its relevance [score], the [method]
+/// identifier describing which signals contributed to the score, and an
+/// optional [breakdown] that exposes each signal's individual contribution.
 ///
 /// Results are sorted by [score] in descending order (highest relevance first).
 ///
@@ -11,6 +13,10 @@ import 'search_entry.dart';
 /// final results = await engine.search('What is Flutter?');
 /// for (final result in results) {
 ///   print('${result.score.toStringAsFixed(3)}  ${result.entry.question}');
+///   if (result.breakdown case final b?) {
+///     print('  vector=${b.vectorScore.toStringAsFixed(3)}'
+///           '  fts=${b.ftsScore.toStringAsFixed(3)}');
+///   }
 /// }
 /// ```
 final class SearchResult {
@@ -19,6 +25,7 @@ final class SearchResult {
     required this.entry,
     required this.score,
     required this.method,
+    this.breakdown,
   });
 
   /// The matched knowledge-base entry.
@@ -35,10 +42,36 @@ final class SearchResult {
   /// Identifier of the search strategy that produced this result.
   ///
   /// Possible values:
-  /// - `"hybrid"` — vector similarity + FTS5 + typo-tolerance (default)
-  /// - `"heuristic"` — heuristic reranker applied on top
+  /// - `"heuristic"` — heuristic reranker applied (default)
   /// - Any custom string returned by a custom [RerankerInterface]
   final String method;
+
+  /// Per-signal score breakdown for this result.
+  ///
+  /// Populated by [HeuristicReranker] and any custom [RerankerInterface] that
+  /// opts in. `null` when the reranker did not provide a breakdown.
+  ///
+  /// Use [breakdown] to debug why a result ranked where it did or to build
+  /// explainability UI.
+  final ScoreBreakdown? breakdown;
+
+  /// Returns a copy with the given fields replaced.
+  ///
+  /// ```dart
+  /// final highlighted = result.copyWith(score: result.score * 1.1);
+  /// ```
+  SearchResult copyWith({
+    SearchEntry? entry,
+    double? score,
+    String? method,
+    ScoreBreakdown? breakdown,
+  }) =>
+      SearchResult(
+        entry: entry ?? this.entry,
+        score: score ?? this.score,
+        method: method ?? this.method,
+        breakdown: breakdown ?? this.breakdown,
+      );
 
   @override
   String toString() =>
@@ -51,8 +84,9 @@ final class SearchResult {
       other is SearchResult &&
           entry == other.entry &&
           score == other.score &&
-          method == other.method;
+          method == other.method &&
+          breakdown == other.breakdown;
 
   @override
-  int get hashCode => Object.hash(entry, score, method);
+  int get hashCode => Object.hash(entry, score, method, breakdown);
 }

@@ -126,7 +126,7 @@ class HybridSearchEngine {
     RerankerInterface? reranker,
     int embedCacheSize = 32,
   })  : _db = db,
-        _embeddings = embeddings,
+        _embeddings = List<Embedding>.of(embeddings),
         _embedder = embedder,
         _config = config,
         _reranker = reranker ?? const HeuristicReranker(),
@@ -154,14 +154,21 @@ class HybridSearchEngine {
   // ---------------------------------------------------------------------------
 
   final Database _db;
+  // Stored as a final copy; actual mutations go through _embeddingMap.
   final List<Embedding> _embeddings;
   final Embedder _embedder;
   final HybridSearchConfig _config;
   final RerankerInterface _reranker;
   final int _embedCacheSize;
 
-  late final List<double> _norms;
-  late final Map<int, String> _idToQuestion;
+  /// Sparse map from SQLite id → embedding vector.
+  /// Populated during [initialize] and updated by [addEntries]/[removeEntries].
+  Map<int, Embedding> _embeddingMap = <int, Embedding>{};
+
+  /// Precomputed L2 norms keyed by SQLite id.
+  Map<int, double> _normMap = <int, double>{};
+
+  late Map<int, String> _idToQuestion;
   LocalHNSW<int>? _hnsw;
 
   bool _initialized = false;
@@ -182,8 +189,11 @@ class HybridSearchEngine {
 
   /// Number of entries (embeddings) managed by this engine.
   ///
-  /// Available immediately after construction (does not require [initialize]).
-  int get entryCount => _embeddings.length;
+  /// Before [initialize] this reflects the size of the list passed to the
+  /// constructor. After [initialize], and after any [addEntries]/[removeEntries]
+  /// calls, it reflects the current live corpus size.
+  int get entryCount =>
+      _embeddingMap.isEmpty ? _embeddings.length : _embeddingMap.length;
 
   // ---------------------------------------------------------------------------
   // Lifecycle
@@ -219,14 +229,21 @@ class HybridSearchEngine {
     try {
       final Stopwatch sw = Stopwatch()..start();
 
-      // Precompute L2 norms for fast cosine similarity.
-      _norms = _embeddings.map(_l2Norm).toList();
+      // Build the id → embedding map (1-based id = list index + 1).
+      _embeddingMap = <int, Embedding>{
+        for (int i = 0; i < _embeddings.length; i++) i + 1: _embeddings[i],
+      };
+      // Precompute L2 norms keyed by id.
+      _normMap = <int, double>{
+        for (final MapEntry<int, Embedding> e in _embeddingMap.entries)
+          e.key: _l2Norm(e.value),
+      };
 
       // Build HNSW index for large corpora.
-      if (_embeddings.length >= _config.hnswThreshold) {
+      if (_embeddingMap.length >= _config.hnswThreshold) {
         _hnsw = _buildHnsw();
         _log.fine(
-          'HNSW index built: ${_embeddings.length} vectors, '
+          'HNSW index built: ${_embeddingMap.length} vectors, '
           'M=${_config.hnswM}, ef=${_config.hnswEf}.',
         );
       }
@@ -238,7 +255,7 @@ class HybridSearchEngine {
       sw.stop();
       _log.fine(
         'Initialized in ${sw.elapsedMilliseconds} ms: '
-        '${_embeddings.length} entries, '
+        '${_embeddingMap.length} entries, '
         'dim=${_config.embeddingDim}, '
         'HNSW=${_hnsw != null}.',
       );
@@ -363,8 +380,10 @@ class HybridSearchEngine {
     if (_hnsw != null) {
       for (final int id in poolIds) {
         idToScore.putIfAbsent(id, () {
-          final int i = id - 1;
-          return _cosine(queryVec, queryNorm, _embeddings[i], _norms[i]);
+          final Embedding? emb = _embeddingMap[id];
+          final double? norm = _normMap[id];
+          if (emb == null || norm == null) return 0.0;
+          return _cosine(queryVec, queryNorm, emb, norm);
         });
       }
     }
@@ -385,8 +404,9 @@ class HybridSearchEngine {
       contentWords: words,
     );
 
-    // Step 6: keyword-overlap filter.
-    final List<SearchResult> results = _filterByOverlap(query, ranked);
+    // Step 6: keyword-overlap filter + minScore threshold.
+    final List<SearchResult> results =
+        _filterByMinScore(_filterByOverlap(query, ranked));
     phase.stop();
     final double rerankMs = phase.elapsedMicroseconds / 1000.0;
 
@@ -472,6 +492,9 @@ class HybridSearchEngine {
   ///
   /// Uses HNSW when available (corpus ≥ [HybridSearchConfig.hnswThreshold]),
   /// otherwise performs a linear O(n) cosine scan.
+  ///
+  /// The `index` field in each returned record holds the **SQLite id** (not
+  /// a list index), so [_toIdScoreMap] is an identity mapping.
   List<({int index, double score})> _scoreByVector(
     Embedding queryVec,
     double queryNorm,
@@ -481,6 +504,7 @@ class HybridSearchEngine {
         List<double>.from(queryVec),
         _config.hnswSearchK,
       );
+      // HNSW items are tagged by SQLite id (set in _buildHnsw).
       return result.items
           .map((LocalHnswSearchResultItem<int> r) =>
               (index: r.item, score: 1.0 - r.distance))
@@ -488,18 +512,21 @@ class HybridSearchEngine {
     }
 
     return <({int index, double score})>[
-      for (int i = 0; i < _embeddings.length; i++)
+      for (final MapEntry<int, Embedding> e in _embeddingMap.entries)
         (
-          index: i,
-          score: _cosine(queryVec, queryNorm, _embeddings[i], _norms[i]),
+          index: e.key,
+          score: _cosine(queryVec, queryNorm, e.value, _normMap[e.key]!),
         ),
     ];
   }
 
-  /// Converts vector scores to a `{id: score}` map (IDs are 1-based).
+  /// Converts vector scores to a `{id: score}` map.
+  ///
+  /// Since [_scoreByVector] stores SQLite ids in the `index` field, this is
+  /// an identity mapping.
   Map<int, double> _toIdScoreMap(List<({int index, double score})> scores) {
     return <int, double>{
-      for (final (:int index, :double score) in scores) index + 1: score,
+      for (final (:int index, :double score) in scores) index: score,
     };
   }
 
@@ -578,9 +605,10 @@ class HybridSearchEngine {
                 b.score.compareTo(a.score),
           );
 
+    // `index` field contains the SQLite id directly (see _scoreByVector).
     final Set<int> pool = sorted
         .take(_config.candidatePoolSize)
-        .map<int>((({int index, double score}) r) => r.index + 1)
+        .map<int>((({int index, double score}) r) => r.index)
         .toSet();
 
     return pool..addAll(keywordIds);
@@ -672,11 +700,24 @@ class HybridSearchEngine {
         .toList();
   }
 
+  /// Removes results whose [SearchResult.score] is below
+  /// [HybridSearchConfig.minScore]. Returns [results] unchanged when
+  /// [HybridSearchConfig.minScore] is 0.0.
+  List<SearchResult> _filterByMinScore(List<SearchResult> results) {
+    if (_config.minScore <= 0.0) return results;
+    return results
+        .where((SearchResult r) => r.score >= _config.minScore)
+        .toList();
+  }
+
   // ---------------------------------------------------------------------------
   // HNSW
   // ---------------------------------------------------------------------------
 
-  /// Builds an HNSW approximate nearest-neighbour index from [_embeddings].
+  /// Builds an HNSW approximate nearest-neighbour index from [_embeddingMap].
+  ///
+  /// Each HNSW item is tagged by its SQLite id so that search results can be
+  /// directly used as ids without the `index + 1` offset.
   LocalHNSW<int> _buildHnsw() {
     final LocalHNSW<int> index = LocalHNSW<int>(
       dim: _config.embeddingDim,
@@ -684,10 +725,10 @@ class HybridSearchEngine {
       M: _config.hnswM,
       ef: _config.hnswEf,
     );
-    for (int i = 0; i < _embeddings.length; i++) {
+    for (final MapEntry<int, Embedding> e in _embeddingMap.entries) {
       index.add(LocalHnswItem<int>(
-        item: i,
-        vector: List<double>.from(_embeddings[i]),
+        item: e.key,
+        vector: List<double>.from(e.value),
       ));
     }
     return index;
@@ -741,7 +782,174 @@ class HybridSearchEngine {
     return dot / (na * nb);
   }
 
-  /// Returns the precomputed embedding for entry [id], or `null` if out of range.
-  Embedding? _embeddingFor(int id) =>
-      (id >= 1 && id <= _embeddings.length) ? _embeddings[id - 1] : null;
+  /// Returns the precomputed embedding for entry [id], or `null` if unknown.
+  Embedding? _embeddingFor(int id) => _embeddingMap[id];
+
+  // ---------------------------------------------------------------------------
+  // Incremental index updates
+  // ---------------------------------------------------------------------------
+
+  /// Adds [entries] with their precomputed [embeddings] to the search index.
+  ///
+  /// [entries] and [embeddings] must have the same length. Each embedding must
+  /// have dimension [HybridSearchConfig.embeddingDim].
+  ///
+  /// New entries are appended to the SQLite table, the FTS5 index, the
+  /// embedding map, and the norm map. If the corpus was already using HNSW,
+  /// or crosses [HybridSearchConfig.hnswThreshold] after the addition, the
+  /// HNSW index is rebuilt to include the new entries.
+  ///
+  /// ```dart
+  /// await engine.addEntries(
+  ///   [SearchEntry(id: 0, category: 'Dart', question: 'What is a Future?',
+  ///                answer: 'An async value.')],
+  ///   [myEmbedder.embed('What is a Future?')],
+  /// );
+  /// ```
+  ///
+  /// Throws [StateError] if [initialize] has not been called or [dispose] has.
+  /// Throws [ArgumentError] if lengths differ or any embedding has wrong dim.
+  Future<void> addEntries(
+    List<SearchEntry> entries,
+    List<Embedding> embeddings,
+  ) async {
+    _assertLive('addEntries');
+    if (entries.length != embeddings.length) {
+      throw ArgumentError(
+        'entries.length (${entries.length}) must equal '
+        'embeddings.length (${embeddings.length}).',
+      );
+    }
+    for (int i = 0; i < embeddings.length; i++) {
+      if (embeddings[i].length != _config.embeddingDim) {
+        throw ArgumentError(
+          'Embedding at index $i has dimension ${embeddings[i].length}, '
+          'expected ${_config.embeddingDim}.',
+        );
+      }
+    }
+    if (entries.isEmpty) return;
+
+    // Assign new ids sequentially after the current maximum.
+    final int firstNewId =
+        _embeddingMap.isEmpty ? 1 : (_embeddingMap.keys.reduce(max) + 1);
+
+    await _db.transaction((Transaction txn) async {
+      for (int i = 0; i < entries.length; i++) {
+        final SearchEntry e = entries[i];
+        final int assignedId = firstNewId + i;
+        await txn.insert(_config.tableName, <String, Object?>{
+          _config.idColumn: assignedId,
+          _config.categoryColumn: e.category,
+          _config.questionColumn: e.question,
+          _config.answerColumn: e.answer,
+        });
+        await txn.rawInsert(
+          'INSERT INTO ${_config.ftsTableName}(rowid, ${_config.questionColumn}) '
+          'VALUES (?, ?)',
+          <Object?>[assignedId, e.question],
+        );
+      }
+    });
+
+    for (int i = 0; i < entries.length; i++) {
+      final int assignedId = firstNewId + i;
+      _embeddingMap[assignedId] = embeddings[i];
+      _normMap[assignedId] = _l2Norm(embeddings[i]);
+      _idToQuestion[assignedId] = entries[i].question;
+    }
+
+    final bool wasUsingHnsw = _hnsw != null;
+    final bool nowAboveThreshold =
+        _embeddingMap.length >= _config.hnswThreshold;
+    if (wasUsingHnsw || nowAboveThreshold) {
+      _hnsw = _buildHnsw();
+    }
+
+    _embedCache.clear();
+    _log.fine(
+      'addEntries: added ${entries.length} entries, '
+      'corpus now ${_embeddingMap.length}, HNSW=${_hnsw != null}.',
+    );
+  }
+
+  /// Removes entries with the given [ids] from the search index.
+  ///
+  /// IDs not present in the corpus are silently ignored.
+  /// After removal, the HNSW index is rebuilt if the corpus is still above
+  /// [HybridSearchConfig.hnswThreshold], or cleared if it dropped below.
+  ///
+  /// ```dart
+  /// await engine.removeEntries([3, 7, 12]);
+  /// ```
+  ///
+  /// Throws [StateError] if [initialize] has not been called or [dispose] has.
+  Future<void> removeEntries(List<int> ids) async {
+    _assertLive('removeEntries');
+    if (ids.isEmpty) return;
+
+    // Keep only ids present in the corpus.
+    final Set<int> toRemove =
+        ids.toSet().intersection(_embeddingMap.keys.toSet());
+    if (toRemove.isEmpty) return;
+
+    final String ph = List<String>.filled(toRemove.length, '?').join(', ');
+    final List<Object> args = toRemove.toList();
+
+    await _db.transaction((Transaction txn) async {
+      await txn.rawDelete(
+        'DELETE FROM ${_config.tableName} '
+        'WHERE ${_config.idColumn} IN ($ph)',
+        args,
+      );
+      // For FTS5 content tables, also remove from the shadow index.
+      for (final int id in toRemove) {
+        final String? q = _idToQuestion[id];
+        if (q != null) {
+          await txn.rawInsert(
+            'INSERT INTO ${_config.ftsTableName}'
+            '(${_config.ftsTableName}, rowid, ${_config.questionColumn}) '
+            "VALUES ('delete', ?, ?)",
+            <Object?>[id, q],
+          );
+        }
+      }
+    });
+
+    for (final int id in toRemove) {
+      _embeddingMap.remove(id);
+      _normMap.remove(id);
+      _idToQuestion.remove(id);
+    }
+
+    if (_embeddingMap.length >= _config.hnswThreshold) {
+      _hnsw = _buildHnsw();
+    } else {
+      _hnsw = null;
+    }
+
+    _embedCache.clear();
+    _log.fine(
+      'removeEntries: removed ${toRemove.length} entries, '
+      'corpus now ${_embeddingMap.length}, HNSW=${_hnsw != null}.',
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internal helpers
+  // ---------------------------------------------------------------------------
+
+  /// Throws [StateError] if the engine is not alive (not initialized or disposed).
+  void _assertLive(String method) {
+    if (_disposed) {
+      throw StateError(
+        'HybridSearchEngine.$method() called after dispose().',
+      );
+    }
+    if (!_initialized) {
+      throw StateError(
+        'HybridSearchEngine.initialize() must be called before $method().',
+      );
+    }
+  }
 }

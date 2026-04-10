@@ -793,6 +793,567 @@ void main() {
       await engine.dispose();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // ScoreBreakdown tests (v1.2.0)
+  // -------------------------------------------------------------------------
+  group('ScoreBreakdown', () {
+    test('stores all five fields', () {
+      const ScoreBreakdown b = ScoreBreakdown(
+        vectorScore: 0.8,
+        ftsScore: 0.5,
+        typoScore: 0.0,
+        conciseScore: 0.3,
+        totalScore: 1.6,
+      );
+      expect(b.vectorScore, closeTo(0.8, 1e-9));
+      expect(b.ftsScore, closeTo(0.5, 1e-9));
+      expect(b.typoScore, closeTo(0.0, 1e-9));
+      expect(b.conciseScore, closeTo(0.3, 1e-9));
+      expect(b.totalScore, closeTo(1.6, 1e-9));
+    });
+
+    test('copyWith overrides only specified fields', () {
+      const ScoreBreakdown b = ScoreBreakdown(
+        vectorScore: 0.8,
+        ftsScore: 0.5,
+        typoScore: 0.0,
+        conciseScore: 0.3,
+        totalScore: 1.6,
+      );
+      final ScoreBreakdown copy = b.copyWith(ftsScore: 0.0, totalScore: 1.1);
+      expect(copy.vectorScore, closeTo(0.8, 1e-9));
+      expect(copy.ftsScore, closeTo(0.0, 1e-9));
+      expect(copy.typoScore, closeTo(0.0, 1e-9));
+      expect(copy.conciseScore, closeTo(0.3, 1e-9));
+      expect(copy.totalScore, closeTo(1.1, 1e-9));
+    });
+
+    test('equality and hashCode', () {
+      const ScoreBreakdown a = ScoreBreakdown(
+        vectorScore: 0.5,
+        ftsScore: 0.5,
+        typoScore: 0.0,
+        conciseScore: 0.0,
+        totalScore: 1.0,
+      );
+      const ScoreBreakdown b = ScoreBreakdown(
+        vectorScore: 0.5,
+        ftsScore: 0.5,
+        typoScore: 0.0,
+        conciseScore: 0.0,
+        totalScore: 1.0,
+      );
+      expect(a, equals(b));
+      expect(a.hashCode, b.hashCode);
+    });
+
+    test('toString contains all relevant values', () {
+      const ScoreBreakdown b = ScoreBreakdown(
+        vectorScore: 0.8,
+        ftsScore: 0.5,
+        typoScore: 0.0,
+        conciseScore: 0.3,
+        totalScore: 1.6,
+      );
+      final String s = b.toString();
+      expect(s, contains('total'));
+      expect(s, contains('vector'));
+      expect(s, contains('fts'));
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // SearchResult.copyWith + breakdown integration tests (v1.2.0)
+  // -------------------------------------------------------------------------
+  group('SearchResult.copyWith', () {
+    test('no-arg copy is equal to original', () {
+      const SearchResult r =
+          SearchResult(entry: _dart, score: 0.9, method: 'heuristic');
+      expect(r.copyWith(), equals(r));
+    });
+
+    test('single-field override changes only that field', () {
+      const SearchResult r =
+          SearchResult(entry: _dart, score: 0.9, method: 'heuristic');
+      final SearchResult copy = r.copyWith(score: 0.5);
+      expect(copy.score, closeTo(0.5, 1e-9));
+      expect(copy.entry, r.entry);
+      expect(copy.method, r.method);
+    });
+
+    test('breakdown field is null by default', () {
+      const SearchResult r =
+          SearchResult(entry: _dart, score: 0.9, method: 'heuristic');
+      expect(r.breakdown, isNull);
+    });
+
+    test('copyWith can attach a breakdown', () {
+      const SearchResult r =
+          SearchResult(entry: _dart, score: 0.9, method: 'heuristic');
+      const ScoreBreakdown bd = ScoreBreakdown(
+        vectorScore: 0.9,
+        ftsScore: 0.0,
+        typoScore: 0.0,
+        conciseScore: 0.0,
+        totalScore: 0.9,
+      );
+      final SearchResult withBd = r.copyWith(breakdown: bd);
+      expect(withBd.breakdown, equals(bd));
+    });
+  });
+
+  group('ScoreBreakdown integration with HeuristicReranker', () {
+    final List<SearchEntry> entries = <SearchEntry>[_dart, _flutter, _isolate];
+    late List<Embedding> embeddings;
+
+    setUpAll(() {
+      embeddings = _makeEmbeddings(entries.length);
+    });
+
+    test('results from heuristic reranker have non-null breakdown', () async {
+      final Database freshDb = await _makeDb(entries);
+      final HybridSearchEngine engine = HybridSearchEngine(
+        db: freshDb,
+        embeddings: embeddings,
+        embedder: _FakeEmbedder(embeddings, 0),
+      );
+      await engine.initialize();
+      final List<SearchResult> results = await engine.search('dart');
+      expect(results, isNotEmpty);
+      for (final SearchResult r in results) {
+        expect(r.breakdown, isNotNull);
+      }
+      await engine.dispose();
+    });
+
+    test('breakdown.totalScore equals result.score', () async {
+      final Database freshDb = await _makeDb(entries);
+      final HybridSearchEngine engine = HybridSearchEngine(
+        db: freshDb,
+        embeddings: embeddings,
+        embedder: _FakeEmbedder(embeddings, 0),
+      );
+      await engine.initialize();
+      final List<SearchResult> results = await engine.search('dart');
+      expect(results, isNotEmpty);
+      for (final SearchResult r in results) {
+        expect(r.breakdown, isNotNull);
+        expect(r.breakdown!.totalScore, closeTo(r.score, 1e-9));
+      }
+      await engine.dispose();
+    });
+
+    test('custom reranker results have null breakdown', () async {
+      final Database freshDb = await _makeDb(entries);
+      final HybridSearchEngine engine = HybridSearchEngine(
+        db: freshDb,
+        embeddings: embeddings,
+        embedder: _FakeEmbedder(embeddings, 0),
+        reranker: _ReverseReranker(),
+      );
+      await engine.initialize();
+      final List<SearchResult> results = await engine.search('dart');
+      // _ReverseReranker does not set breakdown.
+      for (final SearchResult r in results) {
+        expect(r.breakdown, isNull);
+      }
+      await engine.dispose();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // minScore threshold tests (v1.2.0)
+  // -------------------------------------------------------------------------
+  group('minScore threshold', () {
+    test('default minScore is 0.0', () {
+      const HybridSearchConfig c = HybridSearchConfig();
+      expect(c.minScore, closeTo(0.0, 1e-9));
+    });
+
+    test('copyWith propagates minScore', () {
+      const HybridSearchConfig base = HybridSearchConfig();
+      final HybridSearchConfig tuned = base.copyWith(minScore: 0.6);
+      expect(tuned.minScore, closeTo(0.6, 1e-9));
+      // Unrelated fields unchanged.
+      expect(tuned.candidatePoolSize, base.candidatePoolSize);
+    });
+
+    test('minScore 0.0 does not filter any results', () async {
+      final List<SearchEntry> entries = <SearchEntry>[_dart, _flutter, _isolate];
+      final List<Embedding> embeddings = _makeEmbeddings(entries.length);
+      final Database freshDb = await _makeDb(entries);
+
+      final HybridSearchEngine engine = HybridSearchEngine(
+        db: freshDb,
+        embeddings: embeddings,
+        embedder: _FakeEmbedder(embeddings, 0),
+        config: const HybridSearchConfig(minScore: 0.0),
+      );
+      await engine.initialize();
+      final List<SearchResult> results = await engine.search('dart');
+      expect(results, isNotEmpty);
+      await engine.dispose();
+    });
+
+    test('impossibly high minScore returns empty list', () async {
+      final List<SearchEntry> entries = <SearchEntry>[_dart, _flutter, _isolate];
+      final List<Embedding> embeddings = _makeEmbeddings(entries.length);
+      final Database freshDb = await _makeDb(entries);
+
+      final HybridSearchEngine engine = HybridSearchEngine(
+        db: freshDb,
+        embeddings: embeddings,
+        embedder: _FakeEmbedder(embeddings, 0),
+        config: const HybridSearchConfig(minScore: 999.0),
+      );
+      await engine.initialize();
+      final List<SearchResult> results = await engine.search('dart');
+      expect(results, isEmpty);
+      await engine.dispose();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // SearchEntry.metadata tests (v1.2.0)
+  // -------------------------------------------------------------------------
+  group('SearchEntry.metadata', () {
+    test('default metadata is empty', () {
+      const SearchEntry e =
+          SearchEntry(id: 1, category: 'X', question: 'Q', answer: 'A');
+      expect(e.metadata, isEmpty);
+    });
+
+    test('explicit metadata is stored and accessible', () {
+      const SearchEntry e = SearchEntry(
+        id: 1,
+        category: 'X',
+        question: 'Q',
+        answer: 'A',
+        metadata: <String, Object?>{'priority': 1, 'tag': 'ui'},
+      );
+      expect(e.metadata['priority'], 1);
+      expect(e.metadata['tag'], 'ui');
+    });
+
+    test('fromMap without metadataColumn returns empty metadata', () {
+      final SearchEntry e = SearchEntry.fromMap(<String, Object?>{
+        'id': 1,
+        'category': 'X',
+        'question': 'Q',
+        'answer': 'A',
+      });
+      expect(e.metadata, isEmpty);
+    });
+
+    test('fromMap with metadataColumn decodes JSON correctly', () {
+      final SearchEntry e = SearchEntry.fromMap(
+        <String, Object?>{
+          'id': 1,
+          'category': 'X',
+          'question': 'Q',
+          'answer': 'A',
+          'meta': '{"score":42,"active":true,"label":null}',
+        },
+        metadataColumn: 'meta',
+      );
+      expect(e.metadata['score'], 42);
+      expect(e.metadata['active'], true);
+      expect(e.metadata['label'], isNull);
+    });
+
+    test('toMap without metadataColumn does not include metadata key', () {
+      const SearchEntry e = SearchEntry(
+        id: 1,
+        category: 'X',
+        question: 'Q',
+        answer: 'A',
+        metadata: <String, Object?>{'k': 'v'},
+      );
+      final Map<String, Object> m = e.toMap();
+      expect(m.containsKey('meta'), isFalse);
+    });
+
+    test('toMap with metadataColumn encodes metadata as JSON', () {
+      const SearchEntry e = SearchEntry(
+        id: 1,
+        category: 'X',
+        question: 'Q',
+        answer: 'A',
+        metadata: <String, Object?>{'k': 'v'},
+      );
+      final Map<String, Object> m = e.toMap(metadataColumn: 'meta');
+      expect(m['meta'], isA<String>());
+      expect(m['meta'] as String, contains('"k"'));
+    });
+
+    test('round-trip fromMap/toMap preserves metadata', () {
+      const SearchEntry original = SearchEntry(
+        id: 5,
+        category: 'Dart',
+        question: 'Test?',
+        answer: 'Yes.',
+        metadata: <String, Object?>{'x': 1, 'y': 'hello'},
+      );
+      final Map<String, Object> map = original.toMap(metadataColumn: 'meta');
+      final SearchEntry restored = SearchEntry.fromMap(
+        map,
+        metadataColumn: 'meta',
+      );
+      expect(restored.metadata['x'], original.metadata['x']);
+      expect(restored.metadata['y'], original.metadata['y']);
+    });
+
+    test('equality considers metadata', () {
+      const SearchEntry a = SearchEntry(
+        id: 1,
+        category: 'X',
+        question: 'Q',
+        answer: 'A',
+        metadata: <String, Object?>{'k': 'v'},
+      );
+      const SearchEntry b = SearchEntry(
+        id: 1,
+        category: 'X',
+        question: 'Q',
+        answer: 'A',
+        metadata: <String, Object?>{'k': 'v'},
+      );
+      const SearchEntry c = SearchEntry(
+        id: 1,
+        category: 'X',
+        question: 'Q',
+        answer: 'A',
+        metadata: <String, Object?>{'k': 'different'},
+      );
+      expect(a, equals(b));
+      expect(a, isNot(equals(c)));
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Incremental index update tests (v1.2.0)
+  // -------------------------------------------------------------------------
+  group('incremental updates', () {
+    late List<SearchEntry> baseEntries;
+    late List<Embedding> baseEmbeddings;
+
+    setUp(() {
+      baseEntries = <SearchEntry>[_dart, _flutter, _isolate];
+      baseEmbeddings = _makeEmbeddings(baseEntries.length);
+    });
+
+    Future<HybridSearchEngine> makeEngine(Database db) async {
+      final HybridSearchEngine engine = HybridSearchEngine(
+        db: db,
+        embeddings: baseEmbeddings,
+        embedder: _FakeEmbedder(baseEmbeddings, 0),
+      );
+      await engine.initialize();
+      return engine;
+    }
+
+    test('addEntries increases entryCount', () async {
+      final Database freshDb = await _makeDb(baseEntries);
+      final HybridSearchEngine engine = await makeEngine(freshDb);
+
+      final List<SearchEntry> newEntries = <SearchEntry>[
+        const SearchEntry(
+          id: 0,
+          category: 'Dart',
+          question: 'What is a mixin?',
+          answer: 'A mixin adds behaviour.',
+        ),
+      ];
+      final List<Embedding> newEmbeddings = _makeEmbeddings(1);
+      await engine.addEntries(newEntries, newEmbeddings);
+
+      expect(engine.entryCount, baseEntries.length + 1);
+      await engine.dispose();
+    });
+
+    test('newly added entry is found by search', () async {
+      final Database freshDb = await _makeDb(baseEntries);
+      final HybridSearchEngine engine = HybridSearchEngine(
+        db: freshDb,
+        embeddings: baseEmbeddings,
+        // embedder returns the first base embedding for any query
+        embedder: _FakeEmbedder(baseEmbeddings, 0),
+      );
+      await engine.initialize();
+
+      const SearchEntry newEntry = SearchEntry(
+        id: 0,
+        category: 'Dart',
+        question: 'What is a mixin?',
+        answer: 'A way to reuse code.',
+      );
+      // Build an embedding that exactly matches what the fake embedder returns
+      // for queries, so the new entry will rank first.
+      final List<Embedding> newEmbeddings = <Embedding>[baseEmbeddings[0]];
+      await engine.addEntries(<SearchEntry>[newEntry], newEmbeddings);
+
+      final List<SearchResult> results = await engine.search('mixin');
+      final bool found = results.any(
+        (SearchResult r) => r.entry.question == 'What is a mixin?',
+      );
+      expect(found, isTrue);
+      await engine.dispose();
+    });
+
+    test('empty addEntries is a no-op', () async {
+      final Database freshDb = await _makeDb(baseEntries);
+      final HybridSearchEngine engine = await makeEngine(freshDb);
+      final int before = engine.entryCount;
+
+      await engine.addEntries(<SearchEntry>[], <Embedding>[]);
+      expect(engine.entryCount, before);
+      await engine.dispose();
+    });
+
+    test('addEntries throws ArgumentError on length mismatch', () async {
+      final Database freshDb = await _makeDb(baseEntries);
+      final HybridSearchEngine engine = await makeEngine(freshDb);
+      expect(
+        () => engine.addEntries(
+          <SearchEntry>[
+            const SearchEntry(
+                id: 0, category: 'X', question: 'Q', answer: 'A'),
+          ],
+          <Embedding>[], // wrong length
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+      await engine.dispose();
+    });
+
+    test('addEntries throws ArgumentError on wrong embedding dim', () async {
+      final Database freshDb = await _makeDb(baseEntries);
+      final HybridSearchEngine engine = await makeEngine(freshDb);
+      expect(
+        () => engine.addEntries(
+          <SearchEntry>[
+            const SearchEntry(
+                id: 0, category: 'X', question: 'Q', answer: 'A'),
+          ],
+          <Embedding>[Embedding(64)], // wrong dim
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+      await engine.dispose();
+    });
+
+    test('removeEntries decreases entryCount', () async {
+      final Database freshDb = await _makeDb(baseEntries);
+      final HybridSearchEngine engine = await makeEngine(freshDb);
+
+      await engine.removeEntries(<int>[1]);
+      expect(engine.entryCount, baseEntries.length - 1);
+      await engine.dispose();
+    });
+
+    test('removed entry no longer appears in search results', () async {
+      final Database freshDb = await _makeDb(baseEntries);
+      final HybridSearchEngine engine = await makeEngine(freshDb);
+
+      // Confirm entry 1 (_dart) is reachable before removal.
+      final List<SearchResult> before = await engine.search('dart');
+      expect(before.any((SearchResult r) => r.entry.id == 1), isTrue);
+
+      await engine.removeEntries(<int>[1]);
+
+      // After removal, entry 1 should not appear.
+      final List<SearchResult> after = await engine.search('dart');
+      expect(after.any((SearchResult r) => r.entry.id == 1), isFalse);
+      await engine.dispose();
+    });
+
+    test('empty removeEntries is a no-op', () async {
+      final Database freshDb = await _makeDb(baseEntries);
+      final HybridSearchEngine engine = await makeEngine(freshDb);
+      final int before = engine.entryCount;
+
+      await engine.removeEntries(<int>[]);
+      expect(engine.entryCount, before);
+      await engine.dispose();
+    });
+
+    test('removeEntries with unknown ids is silently ignored', () async {
+      final Database freshDb = await _makeDb(baseEntries);
+      final HybridSearchEngine engine = await makeEngine(freshDb);
+      final int before = engine.entryCount;
+
+      await engine.removeEntries(<int>[999, 1000]);
+      expect(engine.entryCount, before);
+      await engine.dispose();
+    });
+
+    test('addEntries then removeEntries leaves corpus consistent', () async {
+      final Database freshDb = await _makeDb(baseEntries);
+      final HybridSearchEngine engine = await makeEngine(freshDb);
+
+      final List<Embedding> newEmbeddings = <Embedding>[baseEmbeddings[0]];
+      await engine.addEntries(
+        <SearchEntry>[
+          const SearchEntry(
+              id: 0, category: 'X', question: 'Extra entry', answer: 'Extra.')
+        ],
+        newEmbeddings,
+      );
+      final int afterAdd = engine.entryCount;
+
+      // The new entry has id = baseEntries.length + 1 = 4.
+      await engine.removeEntries(<int>[4]);
+      expect(engine.entryCount, afterAdd - 1);
+      await engine.dispose();
+    });
+
+    test('addEntries throws StateError before initialize', () async {
+      final Database freshDb = await _makeDb(baseEntries);
+      final HybridSearchEngine engine = HybridSearchEngine(
+        db: freshDb,
+        embeddings: baseEmbeddings,
+        embedder: _FakeEmbedder(baseEmbeddings, 0),
+      );
+      expect(
+        () => engine.addEntries(<SearchEntry>[], <Embedding>[]),
+        throwsStateError,
+      );
+    });
+
+    test('removeEntries throws StateError before initialize', () async {
+      final Database freshDb = await _makeDb(baseEntries);
+      final HybridSearchEngine engine = HybridSearchEngine(
+        db: freshDb,
+        embeddings: baseEmbeddings,
+        embedder: _FakeEmbedder(baseEmbeddings, 0),
+      );
+      expect(
+        () => engine.removeEntries(<int>[1]),
+        throwsStateError,
+      );
+    });
+
+    test('addEntries throws StateError after dispose', () async {
+      final Database freshDb = await _makeDb(baseEntries);
+      final HybridSearchEngine engine = await makeEngine(freshDb);
+      await engine.dispose();
+      expect(
+        () => engine.addEntries(<SearchEntry>[], <Embedding>[]),
+        throwsStateError,
+      );
+    });
+
+    test('removeEntries throws StateError after dispose', () async {
+      final Database freshDb = await _makeDb(baseEntries);
+      final HybridSearchEngine engine = await makeEngine(freshDb);
+      await engine.dispose();
+      expect(
+        () => engine.removeEntries(<int>[1]),
+        throwsStateError,
+      );
+    });
+  });
 }
 
 /// A reranker that reverses the candidate order (for testing custom rerankers).

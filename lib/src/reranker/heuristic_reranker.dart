@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import '../models/score_breakdown.dart';
 import '../models/search_entry.dart';
 import '../models/search_result.dart';
 import '../ranking/search_ranking.dart';
@@ -19,6 +20,9 @@ import 'reranker.dart';
 /// After scoring, candidates are sorted, oversampled (2×), deduplicated by
 /// normalised question text, and finally passed through
 /// [SearchRanking.singleIfPerfect].
+///
+/// Every [SearchResult] produced by this reranker includes a [ScoreBreakdown]
+/// that records each signal's individual contribution.
 ///
 /// This reranker requires **no model files** and works on every platform.
 /// It is the default (and fallback) reranker in [HybridSearchEngine].
@@ -59,23 +63,32 @@ class HeuristicReranker implements RerankerInterface {
     final Set<int> typoOnly =
         ftsIds != null ? keywordMatchIds.difference(ftsIds) : <int>{};
 
-    // Score every candidate with the combined signal.
+    // Score every candidate with the combined signal, capturing the breakdown.
+    final Map<int, ScoreBreakdown> breakdownById = <int, ScoreBreakdown>{};
     final List<(int, double)> scored = <(int, double)>[
       for (final (
             :SearchEntry entry,
             :double vectorScore,
             embedding: Float32List? _,
           ) in candidates)
-        (
-          entry.id,
-          _combinedScore(
+        () {
+          final ({double total, double fts, double typo, double concise}) r =
+              _combinedScore(
             entry: entry,
             base: vectorScore,
             ftsIds: ftsIds,
             typoOnly: typoOnly,
             queryWords: words,
-          ),
-        ),
+          );
+          breakdownById[entry.id] = ScoreBreakdown(
+            vectorScore: vectorScore,
+            ftsScore: r.fts,
+            typoScore: r.typo,
+            conciseScore: r.concise,
+            totalScore: r.total,
+          );
+          return (entry.id, r.total);
+        }(),
     ];
 
     // Sort descending by combined score.
@@ -96,14 +109,15 @@ class HeuristicReranker implements RerankerInterface {
           .toList(),
       byId,
       scoreById,
+      breakdownById,
       limit,
     );
 
     return SearchRanking.singleIfPerfect(results);
   }
 
-  /// Computes the combined score for a single [entry].
-  double _combinedScore({
+  /// Computes the combined score and per-signal components for a single [entry].
+  ({double total, double fts, double typo, double concise}) _combinedScore({
     required SearchEntry entry,
     required double base,
     required Set<int>? ftsIds,
@@ -118,15 +132,16 @@ class HeuristicReranker implements RerankerInterface {
     final double concise =
         SearchRanking.conciseMatchBoostFor(queryWords, entry.question);
 
-    return base + fts + typo + concise;
+    return (total: base + fts + typo + concise, fts: fts, typo: typo, concise: concise);
   }
 
   /// Returns up to [limit] unique results, deduplicating by lowercased
-  /// question text.
+  /// question text. Each result includes a [ScoreBreakdown].
   List<SearchResult> _deduplicate(
     List<int> ids,
     Map<int, SearchEntry> byId,
     Map<int, double> scoreById,
+    Map<int, ScoreBreakdown> breakdownById,
     int limit,
   ) {
     final List<SearchResult> out = <SearchResult>[];
@@ -143,6 +158,7 @@ class HeuristicReranker implements RerankerInterface {
         entry: entry,
         score: scoreById[id] ?? 0.0,
         method: _method,
+        breakdown: breakdownById[id],
       ));
     }
 
